@@ -5,10 +5,16 @@ from optimized import bfs_optimized, dfs_optimized, ucs_optimized, astar_optimiz
 from test import create_easy_state
 import threading
 
+CARD_W = 50
+CARD_H = 70
+COL_GAP = 80
+START_X = 20
+START_Y = 120
+
 class FreeCellGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("FreeCell Solver")
+        self.root.title("FreeCell")
 
         self.state = create_initial_state()
 
@@ -41,14 +47,8 @@ class FreeCellGUI:
             self.foundation_labels[suit] = lbl
 
         # Cascades
-        self.cascade_frame = tk.Frame(self.frame)
-        self.cascade_frame.pack()
-
-        self.cascade_labels = []
-        for i in range(8):
-            lbl = tk.Label(self.cascade_frame, text="", width=10, height=15, borderwidth=2, relief="solid", justify="left")
-            lbl.pack(side=tk.LEFT, padx=5)
-            self.cascade_labels.append(lbl)
+        self.canvas = tk.Canvas(self.frame, width=700, height=400, bg="darkgreen")
+        self.canvas.pack()
 
         # Buttons
         self.button_frame = tk.Frame(self.root)
@@ -59,6 +59,29 @@ class FreeCellGUI:
         tk.Button(self.button_frame, text="DFS", command=self.solve_dfs).pack(side=tk.LEFT, padx=5)
         tk.Button(self.button_frame, text="UCS", command=self.solve_ucs).pack(side=tk.LEFT, padx=5)
         tk.Button(self.button_frame, text="A*", command=self.solve_astar).pack(side=tk.LEFT, padx=5)
+
+    def draw_card(self, x, y, suit, value):
+        color = "red" if suit in ["H", "D"] else "black"
+
+        value_map = {1:"A", 11:"J", 12:"Q", 13:"K"}
+        v = value_map.get(value, str(value))
+
+        text = f"{v}{suit}"
+
+        # rectangle
+        self.canvas.create_rectangle(
+            x, y, x + CARD_W, y + CARD_H,
+            fill="white", outline="black"
+        )
+
+        # text
+        self.canvas.create_text(
+            x + CARD_W//2,
+            y + CARD_H//2,
+            text=text,
+            fill=color,
+            font=("Arial", 12, "bold")
+        )
 
     def play_solution(self, solution, index = 0):
         if index >= len(solution):
@@ -82,9 +105,15 @@ class FreeCellGUI:
             self.foundation_labels[suit].config(text=f"{suit}:{value}")
 
         # Cascades
+        self.canvas.delete("all")
+
+        # draw cascades
         for i, col in enumerate(self.state["cascades"]):
-            text = "\n".join(str(card) for card in col)
-            self.cascade_labels[i].config(text=text)
+            x = START_X + i * COL_GAP
+
+            for j, (suit, value) in enumerate(col):
+                y = START_Y + j * 20
+                self.draw_card(x, y, suit, value)
 
     def new_game(self):
         self.state = create_initial_state()
@@ -134,4 +163,5 @@ class FreeCellGUI:
 if __name__ == "__main__":
     root = tk.Tk()
     app = FreeCellGUI(root)
+
     root.mainloop()
