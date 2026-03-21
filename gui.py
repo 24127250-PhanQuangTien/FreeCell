@@ -70,6 +70,8 @@ class FreeCellGUI:
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
 
+        self.canvas.bind("<Double-Button-1>", self.on_double_click)
+
     def get_col_from_x(self, x):
         for i in range(len(self.state["cascades"])):
             left = START_X + i * COL_GAP - COL_GAP // 2
@@ -79,8 +81,37 @@ class FreeCellGUI:
                 return i
 
         return -1
+    
+    def get_freecell_from_xy(self, event):
+        x_root = event.x_root
+        y_root = event.y_root
+
+        for i, lbl in enumerate(self.freecell_labels):
+            lx = lbl.winfo_rootx()
+            ly = lbl.winfo_rooty()
+            lw = lbl.winfo_width()
+            lh = lbl.winfo_height()
+
+            if lx <= x_root <= lx + lw and ly <= y_root <= ly + lh:
+                return i
+        return -1
 
     def on_press(self, event):
+        # ===== CLICK FREECELL =====
+        for i, lbl in enumerate(self.freecell_labels):
+            lx = lbl.winfo_rootx() 
+            ly = lbl.winfo_rooty() 
+            lw = lbl.winfo_width()
+            lh = lbl.winfo_height()
+
+            if lx <= event.x_root <= lx + lw and ly <= event.y_root <= ly + lh:
+                card = self.state["freecells"][i]
+                if card:
+                    self.drag_data["tag"] = f"freecell_{i}"
+                    self.drag_data["start_x"] = event.x
+                    self.drag_data["start_y"] = event.y
+                return
+            
         item = self.canvas.find_closest(event.x, event.y)
 
         if not item:
@@ -99,24 +130,42 @@ class FreeCellGUI:
             return
 
         card = self.state["cascades"][col][row]
+        self.drag_data["tag"] = tag
+        self.drag_data["start_x"] = event.x
+        self.drag_data["start_y"] = event.y
 
-        # ===== AUTO MOVE TO FOUNDATION =====
+    def on_double_click(self, event):
+        item = self.canvas.find_closest(event.x, event.y)
+
+        if not item:
+            return
+
+        tags = self.canvas.gettags(item[0])
+        if not tags:
+            return
+
+        tag = tags[0]
+
+        if not tag.startswith("card"):
+            return
+
+        col, row = map(int, tag.split("_")[1:])
+
+        # chỉ cho lá trên cùng
+        if row != len(self.state["cascades"][col]) - 1:
+            return
+
+        card = self.state["cascades"][col][row]
         suit, value = card
+
+        # ===== FOUNDATION =====
         if value == self.state["foundations"][suit] + 1:
             self.state["cascades"][col].pop()
             self.state["foundations"][suit] += 1
             self.render()
             return
 
-        # ===== AUTO MOVE TO EMPTY COLUMN =====
-        for i in range(len(self.state["cascades"])):
-            if not self.state["cascades"][i]:  # cột rỗng
-                self.state["cascades"][col].pop()
-                self.state["cascades"][i].append(card)
-                self.render()
-                return
-
-        # ===== AUTO MOVE TO VALID CASCADE =====
+        # ===== CASCADE =====
         for i in range(len(self.state["cascades"])):
             if self.is_valid_move(card, i):
                 self.state["cascades"][col].pop()
@@ -124,10 +173,13 @@ class FreeCellGUI:
                 self.render()
                 return
 
-        # ===== nếu không auto được → cho drag =====
-        self.drag_data["tag"] = tag
-        self.drag_data["start_x"] = event.x
-        self.drag_data["start_y"] = event.y
+        # ===== FREECELL =====
+        for i in range(4):
+            if self.state["freecells"][i] is None:
+                self.state["cascades"][col].pop()
+                self.state["freecells"][i] = card
+                self.render()
+                return
 
     def on_drag(self, event):
         tag = self.drag_data["tag"]
@@ -147,10 +199,46 @@ class FreeCellGUI:
         if not tag:
             return
 
+        # ===== CASE 1: kéo từ freecell =====
+        if tag.startswith("freecell"):
+            i = int(tag.split("_")[1])
+
+            col_to = self.get_col_from_x(event.x)
+
+            if col_to != -1:
+                card = self.state["freecells"][i]
+
+                if card and self.is_valid_move(card, col_to):
+                    self.state["freecells"][i] = None
+                    self.state["cascades"][col_to].append(card)
+
+            self.render()
+            self.drag_data["tag"] = None
+            return
+
+        # ===== CASE 2: kéo từ cascade =====
+        if not tag.startswith("card"):
+            self.drag_data["tag"] = None
+            return
+
         col_from, row = map(int, tag.split("_")[1:])
         card = self.state["cascades"][col_from][row]
 
-        # xác định cột đích
+        # ===== CHECK FREECELL DROP =====
+        freecell_index = self.get_freecell_from_xy(event)
+
+        if freecell_index != -1:
+            if self.state["freecells"][freecell_index] is None:
+                self.state["cascades"][col_from].pop()
+                self.state["freecells"][freecell_index] = card
+            else:
+                print("Freecell occupied")
+
+            self.render()
+            self.drag_data["tag"] = None
+            return
+
+        # ===== CASCADE DROP =====
         items = self.canvas.find_withtag(tag)
 
         rect = None
@@ -161,8 +249,9 @@ class FreeCellGUI:
 
         if rect is None:
             self.render()
+            self.drag_data["tag"] = None
             return
-            
+
         x1, y1, x2, y2 = self.canvas.coords(rect)
         center_x = (x1 + x2) / 2
 
@@ -173,18 +262,13 @@ class FreeCellGUI:
             self.drag_data["tag"] = None
             return
 
-        valid = self.is_valid_move(card, col_to)
-
-        if valid:
-            # cập nhật state
+        if self.is_valid_move(card, col_to):
             self.state["cascades"][col_from].pop()
             self.state["cascades"][col_to].append(card)
         else:
             print("Invalid move")
 
-        # vẽ lại (tự reset vị trí)
         self.render()
-
         self.drag_data["tag"] = None
 
     def is_valid_move(self, card, col_to):
