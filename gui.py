@@ -96,6 +96,16 @@ class FreeCellGUI:
             if lx <= x_root <= lx + lw and ly <= y_root <= ly + lh:
                 return i
         return -1
+    
+    def get_max_movable_cards(self, col_from, col_to):
+        freecells = sum(1 for c in self.state["freecells"] if c is None)
+
+        empty_cols = 0
+        for i, col in enumerate(self.state["cascades"]):
+            if i != col_from and i != col_to and len(col) == 0:
+                empty_cols += 1
+
+        return (freecells + 1) * (2 ** empty_cols)
 
     def on_press(self, event):
         # ===== CLICK FREECELL =====
@@ -294,12 +304,22 @@ class FreeCellGUI:
             self.drag_data["tag"] = None
             return
 
-        if stack and self.is_valid_move(stack[0], col_to):
-            for _ in range(len(stack)):
-                self.state["cascades"][col_from].pop()
-            self.state["cascades"][col_to].extend(stack)
-        else:
-            print("Invalid move")
+        if stack:
+            max_move = self.get_max_movable_cards(col_from, col_to)
+
+            if len(stack) > max_move:
+                print("Exceeds move limit")
+                self.render()
+                self.drag_data["tag"] = None
+                return
+
+            if self.is_valid_move(stack[0], col_to):
+                for _ in range(len(stack)):
+                    self.state["cascades"][col_from].pop()
+
+                self.state["cascades"][col_to].extend(stack)
+            else:
+                print("Invalid move")
 
         self.render()
         self.drag_data["tag"] = None
