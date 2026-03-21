@@ -5,9 +5,9 @@ from optimized import bfs_optimized, dfs_optimized, ucs_optimized, astar_optimiz
 from test import create_easy_state
 import threading
 
-CARD_W = 50
-CARD_H = 70
-COL_GAP = 80
+CARD_W = 70
+CARD_H = 100
+COL_GAP = 130
 START_X = 20
 START_Y = 120
 
@@ -15,6 +15,7 @@ class FreeCellGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("FreeCell")
+        self.root.geometry("1100x800")
 
         self.state = create_initial_state()
 
@@ -53,7 +54,7 @@ class FreeCellGUI:
             self.foundation_labels[suit] = lbl
 
         # Cascades
-        self.canvas = tk.Canvas(self.frame, width=700, height=400, bg="darkgreen")
+        self.canvas = tk.Canvas(self.frame, width=1000, height=650, bg="darkgreen")
         self.canvas.pack()
 
         # Buttons
@@ -113,7 +114,6 @@ class FreeCellGUI:
                 return
             
         item = self.canvas.find_closest(event.x, event.y)
-
         if not item:
             return
 
@@ -125,14 +125,35 @@ class FreeCellGUI:
 
         col, row = map(int, tag.split("_")[1:])
 
-        # chỉ cho lá trên cùng
-        if row != len(self.state["cascades"][col]) - 1:
-            return
+        column = self.state["cascades"][col]
+        stack = column[row:]
 
-        card = self.state["cascades"][col][row]
+        if not self.is_valid_stack(stack):
+            return
+        
         self.drag_data["tag"] = tag
+        self.drag_data["col"] = col
+        self.drag_data["row"] = row
+        self.drag_data["stack"] = stack
         self.drag_data["start_x"] = event.x
         self.drag_data["start_y"] = event.y
+
+    def is_valid_stack(self, stack):
+        red = ["H", "D"]
+
+        for i in range(len(stack) - 1):
+            curr = stack[i]
+            next_card = stack[i + 1]
+
+            # khác màu
+            if (curr[0] in red) == (next_card[0] in red):
+                return False
+
+            # giảm 1
+            if curr[1] != next_card[1] + 1:
+                return False
+
+        return True
 
     def on_double_click(self, event):
         item = self.canvas.find_closest(event.x, event.y)
@@ -189,7 +210,12 @@ class FreeCellGUI:
         dx = event.x - self.drag_data["start_x"]
         dy = event.y - self.drag_data["start_y"]
 
-        self.canvas.move(tag, dx, dy)
+        col = self.drag_data.get("col")
+        row = self.drag_data.get("row")
+
+        if col is not None:
+            for j in range(row, len(self.state["cascades"][col])):
+                self.canvas.move(f"card_{col}_{j}", dx, dy)
 
         self.drag_data["start_x"] = event.x
         self.drag_data["start_y"] = event.y
@@ -222,18 +248,24 @@ class FreeCellGUI:
             return
 
         col_from, row = map(int, tag.split("_")[1:])
-        card = self.state["cascades"][col_from][row]
+        stack = self.drag_data.get("stack")
 
         # ===== CHECK FREECELL DROP =====
         freecell_index = self.get_freecell_from_xy(event)
 
         if freecell_index != -1:
-            if self.state["freecells"][freecell_index] is None:
-                self.state["cascades"][col_from].pop()
-                self.state["freecells"][freecell_index] = card
-            else:
-                print("Freecell occupied")
+            stack = self.drag_data.get("stack")
 
+            if len(stack) == 1:
+                if self.state["freecells"][freecell_index] is None:
+                    card = stack[0]
+                    self.state["cascades"][col_from].pop()
+                    self.state["freecells"][freecell_index] = card
+                else:
+                    print("Freecell occupied")
+            else:
+                print("Cannot move multiple cards to freecell")
+            
             self.render()
             self.drag_data["tag"] = None
             return
@@ -262,9 +294,10 @@ class FreeCellGUI:
             self.drag_data["tag"] = None
             return
 
-        if self.is_valid_move(card, col_to):
-            self.state["cascades"][col_from].pop()
-            self.state["cascades"][col_to].append(card)
+        if stack and self.is_valid_move(stack[0], col_to):
+            for _ in range(len(stack)):
+                self.state["cascades"][col_from].pop()
+            self.state["cascades"][col_to].extend(stack)
         else:
             print("Invalid move")
 
@@ -312,7 +345,7 @@ class FreeCellGUI:
         # text
         self.canvas.create_text(
             x + CARD_W//2,
-            y + CARD_H//2,
+            y + CARD_H//2 - 40,
             text=text,
             fill=color,
             font=("Arial", 12, "bold"),
@@ -348,7 +381,7 @@ class FreeCellGUI:
             x = START_X + i * COL_GAP
 
             for j, (suit, value) in enumerate(col):
-                y = START_Y + j * 20
+                y = START_Y + j * 30
                 self.draw_card(x, y, suit, value, i, j)
 
     def new_game(self):
