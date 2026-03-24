@@ -4,6 +4,8 @@ from solver import bfs, dfs, ucs, astar
 from optimized import bfs_optimized, dfs_optimized, ucs_optimized, astar_optimized
 from test import create_easy_state
 import threading
+import os
+from PIL import Image, ImageTk # Thư viện Pillow
 
 CARD_W = 70
 CARD_H = 100
@@ -19,6 +21,9 @@ class FreeCellGUI:
 
         self.state = create_initial_state()
 
+        self.card_images = {}
+        self.load_images()
+
         self.create_widgets()
         self.render()
 
@@ -27,6 +32,20 @@ class FreeCellGUI:
             "start_x": 0,
             "start_y": 0
         }
+    
+    def load_images(self):
+        suits = ["H", "D", "C", "S"]
+        values = list(range(1, 14))
+
+        for suits in suits:
+            for val in values:
+                img_path = f"asset/{suits}{val}.png"
+                if os.path.exists(img_path):
+                    img = Image.open(img_path)
+                    img = img.resize((CARD_W, CARD_H), Image.LANCZOS)
+                    self.card_images[f"{suits}{val}"] = ImageTk.PhotoImage(img)
+                else:
+                    print(f"Không tìm thấy {img_path}\n")
 
     def create_widgets(self):
         # Frame chính
@@ -346,32 +365,41 @@ class FreeCellGUI:
         return card[1] == top[1] - 1
 
     def draw_card(self, x, y, suit, value, col, row):
-        color = "red" if suit in ["H", "D"] else "black"
-
-        value_map = {1:"A", 11:"J", 12:"Q", 13:"K"}
-        v = value_map.get(value, str(value))
-
-        text = f"{v}{suit}"
-
         tag = f"card_{col}_{row}"
+        img_key = f"{suit}{value}"
 
-        # rectangle
+        # Vẽ khung trống làm hitbox cho kéo thả
         self.canvas.create_rectangle(
             x, y, x + CARD_W, y + CARD_H,
-            fill="white", outline="black",
+            fill="", outline="", # Rỗng để ẩn hitbox
             tags=(tag, "rect")
         )
 
-        # text
-        self.canvas.create_text(
-            x + CARD_W//2,
-            y + CARD_H//2 - 40,
-            text=text,
-            fill=color,
-            font=("Arial", 12, "bold"),
-            tags=(tag, "text")
-        )
+        # Hiển thị ảnh Asset nếu tìm thấy trong cache
+        if img_key in self.card_images:
+            self.canvas.create_image(
+                x, y, 
+                anchor=tk.NW, # Đặt mỏ neo ở góc cùng bên trái
+                image=self.card_images[img_key],
+                tag=(tag, "image") 
+            )
+        else:
+            # Fallback: Nếu thiếu ảnh, tự động vẽ lá bài tĩnh
+            color = "red" if suit in ["H", "D"] else "black"
+            value_map = {1:"A", 11:"J", 12:"Q", 13:"K"}
+            v = value_map.get(value, str(value))
+            text = f"{v}{suit}"
 
+            self.canvas.create_rectangle(
+                x, y, x + CARD_W, y + CARD_H,
+                fill="white", outline="black",
+                tags=(tag, "fallback_rect")
+            )
+            self.canvas.create_text(
+                x + CARD_W//2, y + CARD_H//2 - 30,
+                text=text, fill=color, font=("Arial", 12, "bold"),
+                tags=(tag, "text")
+            )
     def play_solution(self, solution, index = 0):
         if index >= len(solution):
             return
