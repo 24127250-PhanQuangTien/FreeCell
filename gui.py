@@ -91,13 +91,13 @@ class FreeCellGUI:
         return -1
     
     def get_freecell_from_xy(self, event):
-        x_root = event.x_root
-        y_root = event.y_root
+        x = event.x
+        y = event.y
 
         for i in range(4):
             fx = START_X + i * COL_GAP
             fy = TOP_Y
-            if fx <= x_root <= fx + CARD_W and fy <= y_root <= fy + CARD_H:
+            if fx <= x <= fx + CARD_W and fy <= y <= fy + CARD_H:
                 return i
         return -1 
     
@@ -223,7 +223,22 @@ class FreeCellGUI:
         parts = tag.split("_")
         
         # Không cho nhận double click ở ô freecell hoặc foundation 
-        if parts[1] in ["freecell", "foundation"]:
+        if parts[1] == "foundations":
+            return
+        
+        if parts[1] == "freecell":
+            i = int(parts[2])
+            card = self.state["freecells"][i]
+            if not card:
+                return
+
+            suit, value = card
+
+            # move lên foundation nếu hợp lệ
+            if value == self.state["foundations"][suit] + 1:
+                self.state["freecells"][i] = None
+                self.state["foundations"][suit] += 1
+                self.render()
             return
         
         col, row = int(parts[1]), int(parts[2])
@@ -314,6 +329,17 @@ class FreeCellGUI:
             self.render()
             self.drag_data["tag"] = None
             return
+        
+        foundation_suit = self.get_foundation_from_xy(event)
+        if foundation_suit:
+            card = self.state["freecells"][i]
+            suit, val = card
+            if suit == foundation_suit and val == self.state["foundations"][suit] + 1:
+                self.state["freecells"][i] = None
+                self.state["foundations"][suit] += 1
+            self.render()
+            self.drag_data["tag"] = None
+            return
 
         # CHECK THẢ VÀO FOUNDATION
         foundation_suit = self.get_foundation_from_xy(event)
@@ -394,7 +420,7 @@ class FreeCellGUI:
                 x, y, 
                 anchor=tk.NW, # Đặt mỏ neo ở góc cùng bên trái
                 image=self.card_images[img_key],
-                tag=(tag, "image") 
+                tags=(tag, "image") 
             )
         else:
             # Fallback: Nếu thiếu ảnh, tự động vẽ lá bài tĩnh
