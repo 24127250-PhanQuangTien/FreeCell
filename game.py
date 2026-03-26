@@ -26,13 +26,49 @@ def deal_cards(deck):
     
     return cascades
 
-def create_initial_state():
-    deck = shuffle_deck(create_deck())
+# def create_initial_state():
+#     deck = shuffle_deck(create_deck())
     
+#     return {
+#         "cascades": deal_cards(deck),
+#         "freecells": [None]*4,
+#         "foundations": {"H": 0, "D": 0, "C": 0, "S": 0}
+#     }
+
+def ms_rand(seed: int) -> tuple[int, int]:
+    seed = (seed * 214013 + 2531011) & 0x7FFFFFFF
+    return seed, (seed >> 16) # & 0x7FFF  # 15-bit
+
+
+def generate_ms_deck(deal_no: int):
+    seed = deal_no & 0xFFFFFFFF
+
+    deck = list(range(52))
+    result = []
+
+    for i in range(52, 0, -1):
+        seed, r = ms_rand(seed)
+        j = r % i
+
+        result.append(deck[j])
+        deck[j] = deck[i - 1]
+
+    return result
+
+def card_from_index(idx: int):
+    suits = ["C", "D", "H", "S"]
+    suit = suits[idx % 4]
+    rank = idx // 4 + 1
+    return (suit, rank)
+
+def create_initial_state(deal_no: int):
+    deck_idx = generate_ms_deck(deal_no)
+    deck = [card_from_index(i) for i in deck_idx]
+
     return {
         "cascades": deal_cards(deck),
-        "freecells": [None]*4,
-        "foundations": {"H": 0, "D": 0, "C": 0, "S": 0}
+        "freecells": [None] * 4,
+        "foundations": {"H": 0, "D": 0, "C": 0, "S": 0},
     }
 
 #game_action
