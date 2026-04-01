@@ -5,7 +5,7 @@ import os
 import random
 from PIL import Image, ImageTk
 
-from game import create_initial_state, apply_move
+from game import create_initial_state, create_instruction_state, apply_move
 from solver import bfs, dfs, ucs, astar
 from optimized import bfs_optimized, dfs_optimized, ucs_optimized, astar_optimized
 
@@ -74,6 +74,7 @@ class SeedDialog(tk.Toplevel):
         self.configure(bg=BG)
         self.resizable(False, False)
         self.grab_set()
+        self._cancel_flag = False
 
         # Center on parent
         self.geometry(f"340x220+{parent.winfo_rootx()+350}+{parent.winfo_rooty()+250}")
@@ -220,6 +221,7 @@ class FreeCellGUI:
 
         self.state     = create_initial_state(random.randint(1, 9999))
         self.card_images = {}
+        self.guide_image = None
         self._load_images()
 
         self._solving   = False   # lock during solve
@@ -243,6 +245,11 @@ class FreeCellGUI:
                 if os.path.exists(path):
                     img = Image.open(path).resize((CARD_W, CARD_H), Image.LANCZOS)
                     self.card_images[f"{suit}{val}"] = ImageTk.PhotoImage(img)
+
+        path_ins = "asset/guide.png"
+        if os.path.exists(path_ins):
+            img = Image.open(path_ins).resize((WIN_W, WIN_H - BAR_H - MOVE_LOG_H), Image.LANCZOS)
+            self.guide_image = ImageTk.PhotoImage(img)
 
     # ─────────────────────────────────────
     # Build UI layout
@@ -281,6 +288,7 @@ class FreeCellGUI:
 
         # Right-side buttons
         btn_specs = [
+            ("✦ Instruction", self.instruction_game,   "#5c35a0","#e8d8ff"),
             ("⟳  New Game", self.new_game, ACCENT2, "#1a1a00"),
             ("BFS",          self.solve_bfs,  BTN_BG,  BTN_TEXT),
             ("DFS",          self.solve_dfs,  BTN_BG,  BTN_TEXT),
@@ -300,6 +308,43 @@ class FreeCellGUI:
             # Hover effect
             b.bind("<Enter>", lambda e, btn=b: btn.config(bg=BTN_ACTIVE))
             b.bind("<Leave>", lambda e, btn=b, c=bg: btn.config(bg=c))
+
+        self._cancel_btn = tk.Button(
+            self.bar, text="✖ Cancel", command=self._cancel_solver,
+            font=("Courier New", 9, "bold"),
+            bg="#b71c1c", fg="#ffcdd2",
+            activebackground="#d32f2f", activeforeground="white",
+            relief="flat", bd=0, padx=12, pady=0, cursor="hand2", height=2,
+        )
+
+    def _show_cancel_btn(self):
+        self._cancel_btn.pack(side=tk.RIGHT, padx=3, pady=8)
+
+    def _hide_cancel_btn(self):
+        self._cancel_btn.pack_forget()
+
+    def _cancel_solver(self):
+        self._cancel_flag = True
+        self._cancel_anim()
+        self._hide_cancel_btn()
+        self._solving = False
+        self.status_var.set("Đã hủy")
+
+    def _show_victory(self):
+        cx = WIN_W // 2
+        cy = (WIN_H - BAR_H - MOVE_LOG_H) // 2
+        self.canvas.create_rectangle(
+            cx-280, cy-90, cx+280, cy+90,
+            fill="#1a1200", outline=ACCENT2, width=4, tags="victory")
+        self.canvas.create_text(cx+3, cy-22+3, text="🏆  VICTORY  🏆",
+            font=("Courier New", 36, "bold"), fill="#5a4000", tags="victory")
+        self.canvas.create_text(cx, cy-22, text="🏆  VICTORY  🏆",
+            font=("Courier New", 36, "bold"), fill=ACCENT2, tags="victory")
+        self.canvas.create_text(cx, cy+32, text="Bạn đã giải xong ván bài!",
+            font=("Courier New", 14), fill="#ffe082", tags="victory")
+        self.canvas.create_text(cx, cy+62, text="[ Click để tiếp tục ]",
+            font=("Courier New", 10), fill=TEXT_DIM, tags="victory")
+        self.canvas.tag_bind("victory", "<Button-1>", lambda e: self.canvas.delete("victory"))
 
     # ─────────────────────────────────────
     # Rendering
@@ -375,6 +420,30 @@ class FreeCellGUI:
                 text=txt, fill=color,
                 font=("Courier New", 11, "bold"), tags=(tag, "text"))
 
+    def show_guide_overlay(self):
+        if self.guide_image:
+            # Vẽ ảnh hướng dẫn với tag riêng để dễ quản lý
+            self.canvas.create_image(0, 0, anchor=tk.NW, image=self.guide_image, tags="guide_overlay")
+            
+            # Thêm nút "X" hoặc dòng chữ hướng dẫn tắt ở góc màn hình
+            self.canvas.create_rectangle(WIN_W-90, 10, WIN_W-70, 30, fill="#b71c1c", outline="white", tags="guide_overlay")
+            self.canvas.create_text(WIN_W-80, 20, text="X", fill="white", 
+                                    font=("Courier New", 10, "bold"), tags="guide_overlay")
+
+            # Click vào bất kỳ đâu trên ảnh hoặc nút để tắt
+            self.canvas.tag_bind("guide_overlay", "<Button-1>", lambda e: self.hide_guide_overlay())
+            
+            # Hỗ trợ phím ESC để tắt nhanh
+            self.root.bind("<Escape>", lambda e: self.hide_guide_overlay())
+        else:
+            self.status_var.set("⚠ Không tìm thấy file guide.png")
+
+    def hide_guide_overlay(self):
+        # Xóa lớp ảnh hướng dẫn, lộ ra bàn chơi 'create_instruction_state' bên dưới
+        self.canvas.delete("guide_overlay")
+        self.root.unbind("<Escape>")
+        self.status_var.set("✦ Bạn đang trong chế độ chơi thử hướng dẫn")
+
     # ─────────────────────────────────────
     # Smooth solution playback
     # ─────────────────────────────────────
@@ -386,6 +455,8 @@ class FreeCellGUI:
         if index >= len(solution):
             self.status_var.set(f"✓ Giải xong! {len(solution)} nước")
             self._solving = False
+            self._hide_cancel_btn()
+            self._show_victory()
             return
 
         # Update move log strip
@@ -397,8 +468,9 @@ class FreeCellGUI:
         # Flash highlight on moved card (simulate drag feel)
         self._flash_move(move, callback=lambda: (
             self.render(),
-            self.root.after(delay_ms,
-                lambda: self.play_solution(solution, index + 1, delay_ms))
+            setattr(self, '_anim_job',
+                self.root.after(delay_ms,
+                    lambda: self.play_solution(solution, index + 1, delay_ms)))
         ))
 
     def _flash_move(self, move, callback):
@@ -535,6 +607,7 @@ class FreeCellGUI:
             i = int(row_str)
             if self.state["freecells"][i]:
                 self.drag_data.update({"tag": tag, "start_x": event.x, "start_y": event.y})
+                self.canvas.tag_raise(tag)
             return
         if col_str == "foundation":
             return
@@ -547,6 +620,9 @@ class FreeCellGUI:
             "tag": tag, "col": col, "row": row, "stack": stack,
             "start_x": event.x, "start_y": event.y
         })
+        
+        for j in range(row, len(self.state["cascades"][col])):
+            self.canvas.tag_raise(f"card_{col}_{j}")
 
     def on_drag(self, event):
         tag = self.drag_data.get("tag")
@@ -685,17 +761,35 @@ class FreeCellGUI:
             self._anim_job = None
         self._solving = False
 
+    def instruction_game(self):
+        self._cancel_anim()
+        self._hide_cancel_btn()
+        self._cancel_flag = False
+        self._solving = False
+        self.move_log.clear()
+        self.state = create_instruction_state()
+        self.status_var.set("✦ Instruction mode")
+        self.render()
+        self.show_guide_overlay()
+
     def _run_solver(self, name, fn):
         if self._solving:
             return
         self._cancel_anim()
         self.move_log.clear()
         self._solving = True
+        self._cancel_flag = False
         self.status_var.set(f"⏳ {name} đang tính...")
+        self._show_cancel_btn()
 
         def worker():
             result = fn(self.state)
             def done():
+                self._hide_cancel_btn()
+
+                if self._cancel_flag:    
+                    return
+
                 if result["solution"]:
                     sol = result["solution"]
                     t   = round(result["time"], 3)

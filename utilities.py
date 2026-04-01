@@ -1,35 +1,3 @@
-"""
-state_encoder.py
-================
-Compact bit-packed state encoding + pruning utilities cho FreeCell solver.
-
-Layout của 1 integer key (376 bits tổng):
-  [foundations: 16 bits] [freecells: 24 bits] [cascade_lengths: 24 bits] [cards: 312 bits]
-
-Chi tiết:
-  foundations   : 4 suits × 4 bits  = 16 bits  (giá trị 0-13)
-  freecells     : 4 slots × 6 bits  = 24 bits  (card_id 0-51, 63 = rỗng)
-  cascade_lens  : 8 cols × 3 bits   = 24 bits  (0-7 cards mỗi cột)
-  cards         : 8 cols × 13 pos × 6 bits = 624 bits
-                  → nhưng tổng chỉ có 52 cards nên thực tế compact hơn.
-                  Ta encode từng cột flat: mỗi card 6 bits, pad bằng 0b111111.
-
-Card ID: suit_idx * 13 + (rank - 1), range [0, 51]
-  suit order: H=0, D=1, C=2, S=3
-
-Tại sao dùng int thay vì tuple?
-  - Python int là big integer, hashing O(1) và cực nhanh
-  - Không có object overhead như tuple/list
-  - visited set với int tốn ~56 bytes/phần tử vs ~200-400 bytes với tuple
-
-Pruning strategies được implement:
-  1. auto_move_to_foundation : tự động đẩy bài lên foundation nếu an toàn
-     (safe = không có bài nào khác cần lá này làm bước đệm)
-  2. freecell_symmetry       : normalize thứ tự freecell → tránh duplicate state
-  3. empty_cascade_symmetry  : các cột rỗng là tương đương nhau → normalize
-  4. dominance_check         : bỏ move cascade→freecell nếu đã có bài tương đương ở freecell
-"""
-
 # ──────────────────────────────────────────────
 # Constants
 # ──────────────────────────────────────────────
@@ -161,40 +129,33 @@ def decode_state(key: int, original_state=None):
 def _is_safe_to_auto_move(card, foundations) -> bool:
     """
     Một lá bài an toàn để tự động đẩy lên foundation nếu:
-    Tất cả các lá bài có thể cần "đặt lên" nó (lá liền dưới, màu đối lập)
-    đã ở trên foundation rồi.
-
-    Ví dụ: 3♥ an toàn nếu 2♠ và 2♣ đều đã lên foundation
-    (vì không có lá đỏ nào cần 3♥ làm bước đệm trên cascade nữa)
+    Tất cả các lá bài có thể cần "đặt lên" nó đã ở trên foundation rồi.
     """
     suit, rank = card
     if rank == 1:
         return True  # Ace luôn an toàn
 
-    # Các lá màu đối có rank = rank - 1 cần phải đã lên foundation
+    # Các lá màu khác có rank = rank - 1 cần phải đã lên foundation
     RED = {"H", "D"}
     BLACK = {"C", "S"}
     opposite = BLACK if suit in RED else RED
 
     min_opposite_on_foundation = min(foundations[s] for s in opposite)
-    # An toàn nếu tất cả lá đối màu rank-1 đã lên foundation
+    # An toàn nếu tất cả lá khác màu rank-1 đã lên foundation
     return min_opposite_on_foundation >= rank - 1
 
 
-def apply_safe_auto_moves(state) -> tuple:
+def apply_safe_auto_moves(state_parent) -> tuple:
     """
     Áp dụng tất cả safe auto-moves (cascade/freecell → foundation) liên tục
     cho đến khi không còn nước nào.
 
-    Trả về: (new_state, list_of_auto_moves)
-    Tích hợp vào solver: sau mỗi move do AI chọn, gọi hàm này để
-    dọn sạch các lá bài hiển nhiên → giảm chiều sâu search đáng kể.
+    Return: (new_state, list_of_auto_moves)
     """
-    from copy import deepcopy
     state = {
-        "cascades": [col[:] for col in state["cascades"]],
-        "freecells": state["freecells"][:],
-        "foundations": state["foundations"].copy(),
+        "cascades": [col[:] for col in state_parent["cascades"]],
+        "freecells": state_parent["freecells"][:],
+        "foundations": state_parent["foundations"].copy(),
     }
     auto_moves = []
     changed = True
@@ -235,131 +196,83 @@ def apply_safe_auto_moves(state) -> tuple:
 
 def filter_dominated_moves(moves, state) -> list:
     """
-    Loại bỏ các moves bị dominated:
+    Loại bỏ các moves bị dominated
 
-    1. Nếu đã có move cascade→foundation, bỏ tất cả moves khác
-       (game.py đã làm việc này nhưng ta enforce lại ở đây)
-
-    2. Không cho cascade→freecell nếu:
-       - Có một lá y hệt rank/color trong freecell (dư thừa)
-
-    3. Không cho freecell→cascade(empty) nếu cascade→cascade(empty) cũng có
-       (ưu tiên giữ freecell trống)
-
-    4. Không cho 2 moves cascade_to_freecell từ cùng 1 cột liên tiếp
-       (không thể xảy ra trong 1 bước nhưng tránh generate duplicates)
+    1. Nếu đã có move cascade/freecell → foundation an toàn, bỏ tất cả move
+    2. cascade_to_freecell: xem tất cả ô freecell rỗng là TƯƠNG ĐƯƠNG nhau.
+    3. freecell_to_cascade: tương tự, mỗi lá trong freecell chỉ cần 1 move
+       per cột đích (không trùng lặp do slot khác nhau).
+    5. Không cho cascade→freecell nếu có cascade→cascade hợp lệ cho lá đó
+       (ưu tiên sắp xếp hơn là cất vào freecell).
     """
-    # Rule 1: foundation moves trump everything (đã có trong get_moves nhưng double-check)
+    # Rule 1: foundation moves
     foundation_moves = [m for m in moves if "foundation" in m[0]]
-    if foundation_moves:
-        return foundation_moves
+    
+    safe_foundation_moves = []
+    for m in foundation_moves:
+        if m[0] == "cascade_to_foundation":
+            card = state["cascades"][m[1]][-1]
+        else:  # freecell_to_foundation
+            card = state["freecells"][m[1]]
+        if _is_safe_to_auto_move(card, state["foundations"]):
+            safe_foundation_moves.append(m)
+    
+    # Chỉ chặn khi có SAFE foundation move
+    if safe_foundation_moves:
+        return safe_foundation_moves
 
     freecells = state["freecells"]
-    freecell_cards = {c for c in freecells if c is not None}
+    cascades  = state["cascades"]
+
+    # Tìm ô freecell rỗng đầu tiên (đại diện cho tất cả ô rỗng)
+    first_empty_fc = next((i for i, c in enumerate(freecells) if c is None), None)
+
+    # Các lá cascade có move cascade→cascade hợp lệ
+    cards_with_cascade_move = set()
+    for m in moves:
+        if m[0] == "cascade_to_cascade":
+            col = cascades[m[1]]
+            if col:
+                cards_with_cascade_move.add(col[-1])
 
     filtered = []
-    seen_cascade_to_freecell_cards = set()
+    seen_cascade_to_freecell = set()   # set of (col_idx) đã thêm
+    seen_freecell_to_cascade  = set()   # set of (fc_card, dest_col) đã thêm
 
     for move in moves:
         mtype = move[0]
 
-        # Rule 2: cascade→freecell - bỏ nếu lá đó đã có trong freecell
         if mtype == "cascade_to_freecell":
             col_idx = move[1]
-            col = state["cascades"][col_idx]
+            col = cascades[col_idx]
             if not col:
                 continue
             card = col[-1]
-            if card in freecell_cards:
-                continue  # duplicate card in freecell (không xảy ra nhưng đề phòng)
-            # Tránh generate nhiều cascade_to_freecell từ cùng 1 cột
-            if card in seen_cascade_to_freecell_cards:
+            # Rule 5: nếu lá này có thể đi cascade→cascade, đừng cất vào freecell
+            if card in cards_with_cascade_move:
                 continue
-            seen_cascade_to_freecell_cards.add(card)
+            # Rule 2: mỗi cột cascade chỉ sinh 1 move duy nhất vào freecell
+            if col_idx in seen_cascade_to_freecell:
+                continue
+            if first_empty_fc is None:
+                continue
+            # Normalize: luôn dùng first_empty_fc làm slot đích
+            seen_cascade_to_freecell.add(col_idx)
+            filtered.append(("cascade_to_freecell", col_idx, first_empty_fc))
+            continue
+
+        if mtype == "freecell_to_cascade":
+            fc_idx  = move[1]
+            dst_col = move[2]
+            card    = freecells[fc_idx]
+            if card is None:
+                continue
+            # Rule 3: dedup (card, dest) — bất kể slot freecell nào
+            key = (card, dst_col)
+            if key in seen_freecell_to_cascade:
+                continue
+            seen_freecell_to_cascade.add(key)
 
         filtered.append(move)
 
     return filtered if filtered else moves
-
-
-# ──────────────────────────────────────────────
-# Memory estimate utilities
-# ──────────────────────────────────────────────
-
-def estimate_key_size_bytes(key: int) -> int:
-    """Ước lượng bytes của 1 Python big int"""
-    return key.bit_length() // 8 + 28  # 28 bytes overhead của PyObject
-
-
-def compare_key_sizes(state):
-    """In ra so sánh kích thước giữa tuple key cũ và int key mới"""
-    import sys
-
-    # Old way
-    cascades = tuple(tuple(col) for col in state["cascades"])
-    freecells = tuple(state["freecells"])
-    foundations = tuple((k, state["foundations"][k]) for k in sorted(state["foundations"]))
-    old_key = (cascades, freecells, foundations)
-
-    # New way
-    new_key = encode_state(state)
-
-    old_size = sys.getsizeof(old_key)
-    # Rough: count all nested objects
-    for c in cascades:
-        old_size += sys.getsizeof(c)
-        for card in c:
-            old_size += sys.getsizeof(card)
-    for card in freecells:
-        if card:
-            old_size += sys.getsizeof(card)
-    old_size += sys.getsizeof(foundations)
-
-    new_size = sys.getsizeof(new_key)
-
-    print(f"Old tuple key : ~{old_size:,} bytes")
-    print(f"New int key   : ~{new_size:,} bytes")
-    print(f"Reduction     : {old_size / new_size:.1f}x smaller")
-    print(f"Key bit length: {new_key.bit_length()} bits")
-
-
-# ──────────────────────────────────────────────
-# Quick self-test
-# ──────────────────────────────────────────────
-
-if __name__ == "__main__":
-    import sys
-    sys.path.insert(0, ".")
-    from game import create_initial_state
-
-    state = create_initial_state()
-
-    print("=== Encoding test ===")
-    key = encode_state(state)
-    print(f"Key (int)   : {key}")
-    print(f"Key bits    : {key.bit_length()}")
-    print(f"Key bytes   : {sys.getsizeof(key)}")
-
-    print("\n=== Size comparison ===")
-    compare_key_sizes(state)
-
-    print("\n=== Auto-move test ===")
-    test_state = {
-        "cascades": [
-            [("H", 13)],
-            [("D", 13)],
-            [("C", 13)],
-            [("S", 13)],
-            [], [], [], []
-        ],
-        "freecells": [None] * 4,
-        "foundations": {"H": 12, "D": 12, "C": 12, "S": 12}
-    }
-    new_state, auto = apply_safe_auto_moves(test_state)
-    print(f"Auto moves applied: {len(auto)}")
-    print(f"Foundations after : {new_state['foundations']}")
-
-    print("\n=== Encode → Decode roundtrip ===")
-    key2 = encode_state(test_state)
-    decoded = decode_state(key2)
-    print(f"Foundations match: {decoded['foundations'] == {'H': 12, 'D': 12, 'C': 12, 'S': 12}}")

@@ -1,5 +1,4 @@
 import random
-from copy import deepcopy
 
 #basic 
 def create_deck():
@@ -26,50 +25,107 @@ def deal_cards(deck):
     
     return cascades
 
-# def create_initial_state():
-#     deck = shuffle_deck(create_deck())
+def ms_rand_c(seed: int) -> tuple[int, int]:
+    """
+    Đây là rand() của Microsoft C runtime (MSVC)
+    seed = (seed * 214013 + 2531011) & 0xFFFFFFFF
+    return = (seed >> 16) & 0x7FFF  → 15-bit number
+    """
+    seed = (seed * 214013 + 2531011) & 0xFFFFFFFF
+    return seed, (seed >> 16) & 0x7FFF
+
+
+def generate_ms_deck_original(gamenumber: int):
+    """
+    Dịch 1-1 từ C gốc của Microsoft FreeCell.
     
-#     return {
-#         "cascades": deal_cards(deck),
-#         "freecells": [None]*4,
-#         "foundations": {"H": 0, "D": 0, "C": 0, "S": 0}
-#     }
+    C gốc:
+        srand(gamenumber);
+        for (i = 0; i < 52; i++) {
+            j = rand() % wLeft;
+            card[(i%8)+1][i/8] = deck[j];
+            deck[j] = deck[--wLeft];
+        }
+    """
+    MAXCOL = 9   # col 0 bỏ trống, dùng col 1-8
+    MAXPOS = 21
+    EMPTY  = -1
 
-def ms_rand(seed: int) -> tuple[int, int]:
-    seed = (seed * 214013 + 2531011) & 0x7FFFFFFF
-    return seed, (seed >> 16) # & 0x7FFF  # 15-bit
+    # Khởi tạo bảng bài (giống C: card[MAXCOL][MAXPOS])
+    card = [[EMPTY] * MAXPOS for _ in range(MAXCOL)]
+
+    # Khởi tạo deck 52 lá
+    deck  = list(range(52))
+    wLeft = 52
+    seed  = gamenumber
+
+    for i in range(52):
+        seed, r = ms_rand_c(seed)
+        j = r % wLeft                        # j = rand() % wLeft
+        card[(i % 8) + 1][i // 8] = deck[j] # card[(i%8)+1][i/8] = deck[j]
+        deck[j] = deck[wLeft - 1]            # deck[j] = deck[--wLeft]
+        wLeft -= 1
+
+    return card
 
 
-def generate_ms_deck(deal_no: int):
-    seed = deal_no & 0xFFFFFFFF
-
-    deck = list(range(52))
-    result = []
-
-    for i in range(52, 0, -1):
-        seed, r = ms_rand(seed)
-        j = r % i
-
-        result.append(deck[j])
-        deck[j] = deck[i - 1]
-
-    return result
-
-def card_from_index(idx: int):
-    suits = ["C", "D", "H", "S"]
-    suit = suits[idx % 4]
-    rank = idx // 4 + 1
+def card_index_to_card(idx: int):
+    """
+    C gốc:
+        SUIT(card)  = card % 4   → 0=Club, 1=Diamond, 2=Heart, 3=Spade
+        VALUE(card) = card / 4   → 0=Ace, 1=Deuce, ..., 12=King
+    """
+    suits = ["C", "D", "H", "S"]   # Club=0, Diamond=1, Heart=2, Spade=3
+    suit  = suits[idx % 4]
+    rank  = idx // 4 + 1            # 1-based (1=Ace, 13=King)
     return (suit, rank)
 
-def create_initial_state(deal_no: int):
-    deck_idx = generate_ms_deck(deal_no)
-    deck = [card_from_index(i) for i in deck_idx]
+
+def create_initial_state(gamenumber: int):
+    """
+    Tạo state từ layout gốc của MS FreeCell C code.
+    card[col][pos] với col từ 1-8, pos từ 0 trở đi.
+    """
+    card = generate_ms_deck_original(gamenumber)
+    EMPTY = -1
+
+    cascades = []
+    for col in range(1, 9):          # col 1 → 8
+        column = []
+        for pos in range(21):
+            c = card[col][pos]
+            if c == EMPTY:
+                break
+            column.append(card_index_to_card(c))
+        cascades.append(column)
 
     return {
-        "cascades": deal_cards(deck),
+        "cascades": cascades,
         "freecells": [None] * 4,
         "foundations": {"H": 0, "D": 0, "C": 0, "S": 0},
     }
+
+# Tạo màn chơi hướng dẫn
+def create_instruction_state(seed=None):
+    """
+    Hàm tạo initial state lever easy cho newbie/algorithm giải được
+    """
+    state = {
+        "cascades": [
+            [('S',5), ('S',10), ('C',4)],
+            [('C',12), ('C',8), ('D',7)],
+            [('C',2), ('H',9), ('S',3), ('C',13)],
+            [('C',11), ('D',10), ('S',9), ('H',8), ('S',7), ('D',6), ('C',5), ('H',4), ('C',3)],
+            [('H',3), ('D',12), ('S',11), ('H',10), ('C',9), ('D',8), ('C',7)],
+            [('H',13), ('S',12), ('D',11), ('C', 10)],
+            [('D',5), ('D',9), ('S',8), ('H',7), ('S', 6)],
+            [('H',6), ('D',13), ('C',6), ('H',5), ('S', 4)]
+        ],
+        "freecells": [('S', 13), ('H', 11), ('H',12), None],
+        "foundations": {"H": 2, "D": 4, "C": 1, "S": 2},
+    }
+
+    return state
 
 #game_action
 def is_red(suit):

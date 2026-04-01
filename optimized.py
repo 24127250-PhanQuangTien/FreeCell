@@ -1,13 +1,3 @@
-"""
-optimized.py  (v2 — compact encoding + aggressive pruning)
-===========================================================
-Tất cả solver đều dùng:
-  • encode_state()          : int key thay cho state_to_tuple() → ~10x ít RAM hơn
-  • apply_safe_auto_moves() : tự động đẩy lá hiển nhiên lên foundation mỗi bước
-                              → giảm chiều sâu search, ít branching hơn
-  • filter_dominated_moves(): cắt nhánh bị dominated trước khi expand
-"""
-
 import heapq
 import time
 import csv
@@ -16,7 +6,7 @@ import os
 import tracemalloc
 
 from game import get_moves, apply_move, is_goal
-from state_encoder import encode_state, apply_safe_auto_moves, filter_dominated_moves
+from utilities import encode_state, apply_safe_auto_moves, filter_dominated_moves
 
 
 # ──────────────────────────────────────────────────────────
@@ -39,8 +29,7 @@ def heuristic(state) -> float:
     foundations = state["foundations"]
     total = 0
 
-    # Đóng gói depth của từng lá trong cascade
-    depth_map = {}  # card → depth_from_top (0 = top/exposed)
+    depth_map = {} 
     for col in state["cascades"]:
         n = len(col)
         for i, card in enumerate(col):
@@ -54,23 +43,79 @@ def heuristic(state) -> float:
                 # Trong cascade: cần dọn depth lá + 1 move lên foundation
                 total += 1 + depth_map[card]
             else:
-                # Trong freecell: đã exposed, chỉ cần 1 move
+                # Trong freecell: chỉ cần 1 move
                 total += 1
 
     return total
 
 
 # ──────────────────────────────────────────────────────────
-# Helper: expand 1 state → list (new_state, move, auto_moves)
+# Move cost table (dùng cho UCS và A*)
+# ──────────────────────────────────────────────────────────
+#
+# Move type                             | Cost
+# --------------------------------------|------
+# Lên Foundation (cascade/freecell)     |  0.1 
+# Giải phóng hoàn toàn 1 cột            |  1
+# Freecell → Cascade (stack hợp lệ)     |  1.5   
+# Cascade → Cascade (stack bình thường) |  2   
+# Lấp đầy 1 cột đang trống              |  3   
+# Cascade → Freecell (tốn ô tạm)        |  3  
+
+def move_cost(move, state_before, state_after) -> float:
+    """
+    Tính cost thực của 1 move dựa trên ngữ cảnh game.
+    Dùng cost nhỏ, sát nhau để UCS không phải explore quá nhiều nodes.
+    """
+    mtype = move[0]
+
+    # Lên foundation: ưu tiên tuyệt đối
+    if "foundation" in mtype:
+        return 0.1
+
+    cascades_before = state_before["cascades"]
+
+    if mtype == "cascade_to_freecell":
+        col_idx = move[1]
+        # Cột chỉ còn 1 lá → sau move tạo cột rỗng → rất có giá trị
+        if len(cascades_before[col_idx]) == 1:
+            return 1
+        return 3
+
+    if mtype == "freecell_to_cascade":
+        dst_col = move[2]
+        # Lấp vào cột rỗng
+        if not cascades_before[dst_col]:
+            return 3
+        return 1.5   # stack hợp lệ → giải phóng freecell
+
+    if mtype == "cascade_to_cascade":
+        src_col = move[1]
+        dst_col = move[2]
+        # Tạo cột rỗng
+        if len(cascades_before[src_col]) == 1:
+            return 1
+        # Lấp vào cột rỗng
+        if not cascades_before[dst_col]:
+            return 3
+        return 2
+
+    return 2
+
+
+# ──────────────────────────────────────────────────────────
+# Helper: expand 1 state → list (new_state, move, auto_moves, step_cost)
 # ──────────────────────────────────────────────────────────
 
 def _expand(state):
     """
     Sinh tất cả successor states, mỗi successor đã được:
-      1. apply move do solver chọn
+      1. apply primary move do solver chọn
       2. apply tất cả safe auto-moves tiếp theo
 
-    Trả về list of (successor_state, primary_move, auto_moves_list)
+    Trả về list of (successor_state, primary_move, auto_moves_list, step_cost)
+      - step_cost: chi phí của primary move theo bảng move_cost()
+      - auto_moves đã được tính thêm cost 0.5 mỗi lá (lên foundation)
     """
     raw_moves = get_moves(state)
     moves     = filter_dominated_moves(raw_moves, state)
@@ -79,7 +124,9 @@ def _expand(state):
     for move in moves:
         s1 = apply_move(state, move)
         s2, auto = apply_safe_auto_moves(s1)
-        results.append((s2, move, auto))
+        # cost primary move + cost auto moves (mỗi auto là to_foundation → 0.5)
+        cost = move_cost(move, state, s1) + len(auto) * 0.5
+        results.append((s2, move, auto, cost))
 
     return results
 
@@ -158,7 +205,7 @@ def bfs_optimized(initial_state):
 
             expanded += 1
 
-            for succ, move, auto in _expand(state):
+            for succ, move, auto, _cost in _expand(state):
                 key = encode_state(succ)
                 if key not in visited:
                     visited.add(key)
@@ -209,7 +256,7 @@ def dfs_optimized(initial_state, max_depth=300):
 
             succs = _expand(state)
             # Reverse để DFS đi theo thứ tự tự nhiên
-            for succ, move, auto in reversed(succs):
+            for succ, move, auto, _cost in reversed(succs):
                 key = encode_state(succ)
                 if key not in visited:
                     visited.add(key)
@@ -230,7 +277,23 @@ def dfs_optimized(initial_state, max_depth=300):
 # UCS optimized
 # ──────────────────────────────────────────────────────────
 
-def ucs_optimized(initial_state):
+def _reconstruct_path(parent_map, goal_key):
+    """
+    Reconstruct solution từ parent_map.
+    parent_map[key] = (parent_key, primary_move, auto_moves)
+    """
+    solution = []
+    key = goal_key
+    while parent_map[key][0] is not None:
+        parent_key, move, auto = parent_map[key]
+        solution = [move] + auto + solution
+        key = parent_key
+    # Thêm init_auto (auto-moves của initial state)
+    _, _, init_auto = parent_map[key]
+    return init_auto + solution
+
+
+def ucs_optimized(initial_state, max_nodes=500_000):
     tracemalloc.start()
     try:
         start = time.time()
@@ -238,38 +301,53 @@ def ucs_optimized(initial_state):
         init_state, init_auto = apply_safe_auto_moves(initial_state)
         init_key = encode_state(init_state)
 
-        # heap: (cost, tie_breaker, state, path)
-        counter  = 0
-        pq       = [(0, counter, init_state, init_auto)]
-        g_score  = {init_key: 0}
-        expanded = 0
+        # Dùng h nhỏ làm tie-breaker trong heap: (cost, h_tiebreak, counter, key)
+        # → UCS vẫn optimal (cost là priority chính) nhưng explore ít hơn
+        def h_light(state):
+            """Đếm số lá chưa lên foundation — tie-break nhanh, không tốn CPU."""
+            fnd = state["foundations"]
+            return 52 - sum(fnd.values())
+
+        counter     = 0
+        h0          = h_light(init_state)
+        pq          = [(0, h0, counter, init_key)]
+        g_score     = {init_key: 0}
+        parent_map  = {init_key: (None, None, init_auto)}
+        key_to_state = {init_key: init_state}
+        expanded    = 0
 
         while pq:
-            cost, _, state, path = heapq.heappop(pq)
+            cost, _h, _, cur_key = heapq.heappop(pq)
 
-            cur_key = encode_state(state)
             if cost > g_score.get(cur_key, float("inf")):
-                continue   # stale entry
+                continue
+
+            state = key_to_state[cur_key]
 
             if is_goal(state):
+                solution = _reconstruct_path(parent_map, cur_key)
                 return _finalize("UCS", {
-                    "solution": path,
+                    "solution": solution,
                     "time": time.time() - start,
                     "expanded_nodes": expanded,
-                    "length": len(path),
+                    "length": len(solution),
                 })
+
+            if expanded >= max_nodes:
+                break
 
             expanded += 1
 
-            for succ, move, auto in _expand(state):
-                new_cost = cost + 1 + len(auto)   # mỗi move (kể cả auto) tốn 1
+            for succ, move, auto, step_cost in _expand(state):
+                new_cost = cost + step_cost
                 key = encode_state(succ)
 
                 if new_cost < g_score.get(key, float("inf")):
-                    g_score[key] = new_cost
+                    g_score[key]      = new_cost
+                    parent_map[key]   = (cur_key, move, auto)
+                    key_to_state[key] = succ
                     counter += 1
-                    heapq.heappush(pq, (new_cost, counter, succ,
-                                        _full_path(move, auto, path)))
+                    heapq.heappush(pq, (new_cost, h_light(succ), counter, key))
 
         return _finalize("UCS", {
             "solution": None,
@@ -319,12 +397,12 @@ def astar_optimized(initial_state):
 
             expanded += 1
 
-            for succ, move, auto in _expand(state):
+            for succ, move, auto, step_cost in _expand(state):
                 key = encode_state(succ)
                 if key in closed:
                     continue
 
-                new_g = g + 1 + len(auto)
+                new_g = g + step_cost
 
                 if new_g < g_score.get(key, float("inf")):
                     g_score[key] = new_g
