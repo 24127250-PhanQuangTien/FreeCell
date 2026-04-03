@@ -137,18 +137,19 @@ def _is_safe_to_auto_move(card, foundations) -> bool:
 
 def apply_safe_auto_moves(state_parent) -> tuple:
     """
-    Áp dụng tất cả safe auto-moves (cascade/freecell → foundation) liên tục
-    cho đến khi không còn nước nào.
-
-    Return: (new_state, list_of_auto_moves)
+    Áp dụng tất cả safe auto-moves liên tục.
+    Tối ưu hóa: Tránh Deep Copy, chỉ dùng Slicing cho các cột bị thay đổi.
     """
+    # Chỉ copy mảng vỏ ngoài (Shallow)
     state = {
-        "cascades": [col[:] for col in state_parent["cascades"]],
-        "freecells": state_parent["freecells"][:],
+        "cascades": list(state_parent["cascades"]),
+        "freecells": list(state_parent["freecells"]),
         "foundations": state_parent["foundations"].copy(),
     }
+    
     auto_moves = []
     changed = True
+    
     while changed:
         changed = False
 
@@ -160,7 +161,8 @@ def apply_safe_auto_moves(state_parent) -> tuple:
             suit, rank = card
             if state["foundations"][suit] == rank - 1:
                 if _is_safe_to_auto_move(card, state["foundations"]):
-                    col.pop()
+                    # Slicing thay vì pop()
+                    state["cascades"][i] = col[:-1]
                     state["foundations"][suit] += 1
                     auto_moves.append(("cascade_to_foundation", i))
                     changed = True

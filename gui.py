@@ -219,7 +219,9 @@ class FreeCellGUI:
         self.root.configure(bg=BG)
         self.root.resizable(False, False)
 
-        self.state     = create_initial_state(random.randint(1, 9999))
+        self.current_seed = random.randint(1, 64000)
+        self.is_instruction = False
+        self.state     = create_initial_state(self.current_seed)
         self.card_images = {}
         self.guide_image = None
         self._load_images()
@@ -289,7 +291,8 @@ class FreeCellGUI:
         # Right-side buttons
         btn_specs = [
             ("✦ Instruction", self.instruction_game,   "#5c35a0","#e8d8ff"),
-            ("⟳  New Game", self.new_game, ACCENT2, "#1a1a00"),
+            ("⟳ New Game", self.new_game, ACCENT2, "#1a1a00"),
+            ("↺ Restart",   self.restart_game, "#ff8f00", "#1a1a00"),
             ("BFS",          self.solve_bfs,  BTN_BG,  BTN_TEXT),
             ("DFS",          self.solve_dfs,  BTN_BG,  BTN_TEXT),
             ("UCS",          self.solve_ucs,  BTN_BG,  BTN_TEXT),
@@ -837,14 +840,34 @@ class FreeCellGUI:
         self.move_log.clear()
 
         if dlg.result is not None:
-            self.status_var.set(f"Seed: {dlg.result}")
-            self.state = create_initial_state(dlg.result)
+            self.current_seed = dlg.result
+            self.status_var.set(f"Seed: {self.current_seed}")
         else:
-            random_seed = random.randint(1, 32000)
-            self.status_var.set(f"Ngẫu nhiên (Seed: {random_seed})")
-            self.state = create_initial_state(random_seed)
+            self.current_seed = random.randint(1, 64000)
+            self.status_var.set(f"Ngẫu nhiên (Seed: {self.current_seed})")
 
+        self.is_instruction = False
+        self.state = create_initial_state(self.current_seed)
         self.render()
+
+    def restart_game(self):
+        self._cancel_anim()
+        self._hide_cancel_btn()
+        self._cancel_flag = False
+        self._solving = False
+        self.move_log.clear()
+
+        # Kiểm tra xem có đang ở chế độ hướng dẫn không
+        if getattr(self, "is_instruction", False):
+            self.state = create_instruction_state()
+            self.status_var.set("✦ Instruction mode")
+            self.render()
+            self.show_guide_overlay()
+        else:
+            # Tạo lại ván bài với seed đã lưu
+            self.state = create_initial_state(self.current_seed)
+            self.status_var.set(f"↺ Seed: {self.current_seed}")
+            self.render()
 
     def _cancel_anim(self):
         if self._anim_job:
@@ -858,7 +881,10 @@ class FreeCellGUI:
         self._cancel_flag = False
         self._solving = False
         self.move_log.clear()
+
+        self.is_instruction = True
         self.state = create_instruction_state()
+
         self.status_var.set("✦ Instruction mode")
         self.render()
         self.show_guide_overlay()

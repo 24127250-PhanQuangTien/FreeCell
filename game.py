@@ -162,55 +162,60 @@ def get_moves(state):
     return moves
 
 def apply_move(state, move):
-    new_state = {
-        "cascades": [col[:] for col in state["cascades"]],
-        "freecells": state["freecells"][:],
-        "foundations": state["foundations"].copy()
+    """
+    Tối ưu hóa: Chỉ tạo mới những cột thực sự thay đổi.
+    Sử dụng tuple nếu có thể để giảm overhead của list.
+    """
+    # Không copy toàn bộ mảng cascades ngay từ đầu
+    cascades = state["cascades"]
+    freecells = state["freecells"]
+    foundations = state["foundations"]
     
-    }
-
-    freecells = new_state["freecells"]
-    cascades = new_state["cascades"]
-    foundations = new_state["foundations"]
-
+    # Tạo copy nông (shallow copy) nhanh chóng
+    new_cascades = cascades.copy()
+    new_freecells = freecells.copy()
+    new_foundations = foundations.copy()
+    
     move_type = move[0]
 
-    #cascade -> foundation
     if move_type == "cascade_to_foundation":
         i = move[1]
-        card = cascades[i].pop()
-        suit, rank = card
-        foundations[suit] += 1
+        # Chỉ copy cột bị ảnh hưởng
+        new_cascades[i] = cascades[i][:-1] 
+        suit = cascades[i][-1][0]
+        new_foundations[suit] += 1
 
-    #freecell -> foundation
     elif move_type == "freecell_to_foundation":
         i = move[1]
         card = freecells[i]
-        freecells[i] = None
-        suit, rank = card
-        foundations[suit] += 1
+        new_freecells[i] = None
+        new_foundations[card[0]] += 1
 
-    #cascade -> freecell
     elif move_type == "cascade_to_freecell":
         i, j = move[1], move[2]
-        card = cascades[i].pop()
-        freecells[j] = card
+        card = cascades[i][-1]
+        new_cascades[i] = cascades[i][:-1]
+        new_freecells[j] = card
 
-    #freecell -> cascade
     elif move_type == "freecell_to_cascade":
         i, j = move[1], move[2]
         card = freecells[i]
-        freecells[i] = None
-        cascades[j].append(card)
+        new_freecells[i] = None
+        # Nối phần tử mới vào cuối
+        new_cascades[j] = cascades[j] + [card] 
 
-    #cascade -> cascade
     elif move_type == "cascade_to_cascade":
         i, j = move[1], move[2]
-        card = cascades[i].pop()
-        cascades[j].append(card)
+        card = cascades[i][-1]
+        new_cascades[i] = cascades[i][:-1]
+        new_cascades[j] = cascades[j] + [card]
 
-    return new_state
-
+    return {
+        "cascades": new_cascades,
+        "freecells": new_freecells,
+        "foundations": new_foundations
+    }
+    
 #check GOAL
 def is_goal(state):
     foundations = state["foundations"]
