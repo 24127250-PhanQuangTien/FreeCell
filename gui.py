@@ -572,7 +572,7 @@ class FreeCellGUI:
 
     def _can_stack(self, card1, card2):
         s1, r1 = card1; s2, r2 = card2
-        return (self._is_red(s1) != self._is_red(s2)) and (r1 == r2 - 1)
+        return (self._is_red(s1) != self._is_red(s2)) and (r1 == r2 + 1)
 
     def _is_valid_stack(self, stack):
         for i in range(len(stack) - 1):
