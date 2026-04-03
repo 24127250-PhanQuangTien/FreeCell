@@ -8,6 +8,46 @@ import tracemalloc
 
 _SOLVER_STATS_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "solver_runs.csv")
 
+EMPTY = 63
+
+SUIT_MAP = {'C': 0, 'D': 1, 'H': 2, 'S': 3}
+
+def card_to_int(card):
+    suit, rank = card
+    return (rank - 1) * 4 + SUIT_MAP[suit]
+
+def normalize_state(state):
+    # sort cascades (symmetry prune)
+    cascades = sorted(
+        [tuple(card_to_int(c) for c in col) for col in state["cascades"]]
+    )
+
+    # sort freecells
+    freecells = sorted(
+        card_to_int(c) if c else -1
+        for c in state["freecells"]
+    )
+
+    return cascades, freecells
+def encode_state_fast(state):
+    cascades, freecells = normalize_state(state)
+
+    lengths = [len(col) for col in cascades]
+    cascades_flat = [c for col in cascades for c in col]
+
+    foundations = (
+        state["foundations"]["H"],
+        state["foundations"]["D"],
+        state["foundations"]["C"],
+        state["foundations"]["S"],
+    )
+
+    return (
+        tuple(lengths),
+        tuple(cascades_flat),
+        tuple(freecells),
+        foundations
+    )
 
 def _append_solver_csv(algorithm_name, result, memory_peak_bytes):
     fieldnames = [
@@ -53,7 +93,7 @@ def bfs(initial_state):
         visited = set()
 
         queue.append((initial_state, []))
-        visited.add(state_to_tuple(initial_state))
+        visited.add(encode_state_fast(initial_state))
 
         expanded_nodes = 0
 
@@ -74,7 +114,7 @@ def bfs(initial_state):
 
             for move in moves:
                 new_state = apply_move(state, move)
-                state_key = state_to_tuple(new_state)
+                state_key = encode_state_fast(new_state)
 
                 if state_key not in visited:
                     visited.add(state_key)
@@ -101,7 +141,7 @@ def dfs(initial_state, max_depth = 1000):
         visited = set()
 
         stack.append((initial_state, []))
-        visited.add(state_to_tuple(initial_state))
+        visited.add(encode_state_fast(initial_state))
 
         expanded_nodes = 0
 
@@ -129,8 +169,15 @@ def dfs(initial_state, max_depth = 1000):
             moves.reverse()
 
             for move in moves:
+                if path and move == reverse_move(path[-1]):
+                    continue
+                if move[0] == "cascade_to_cascade":
+                    _, dst = move[1], move[2]
+                    if not state["cascades"][dst]:  # dst empty
+                        continue
+                
                 new_state = apply_move(state, move)
-                state_key = state_to_tuple(new_state)
+                state_key = encode_state_fast(new_state)
 
                 if state_key not in visited:
                     visited.add(state_key)
@@ -157,7 +204,7 @@ def ucs(initial_state):
         visited = set()
 
         heapq.heappush(pq, (0, id(initial_state), initial_state, []))
-        visited.add(state_to_tuple(initial_state))
+        visited.add(encode_state_fast(initial_state))
 
         expanded_nodes = 0
 
@@ -178,8 +225,15 @@ def ucs(initial_state):
             moves = get_moves(state)
 
             for move in moves:
+                if path and move == reverse_move(path[-1]):
+                    continue
+                if move[0] == "cascade_to_cascade":
+                    _, dst = move[1], move[2]
+                    if not state["cascades"][dst]:  # dst empty
+                        continue
+
                 new_state = apply_move(state, move)
-                state_key = state_to_tuple(new_state)
+                state_key = encode_state_fast(new_state)
 
                 if state_key not in visited:
                     visited.add(state_key)
@@ -295,6 +349,10 @@ def astar(initial_state):
             for move in moves:
                 if path and move == reverse_move(path[-1]):
                     continue
+                if move[0] == "cascade_to_cascade":
+                    _, dst = move[1], move[2]
+                    if not state["cascades"][dst]:  # dst empty
+                        continue
 
                 new_state = apply_move(state, move)
                 state_key = state_to_tuple(new_state)

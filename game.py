@@ -1,39 +1,68 @@
-import random
-from copy import deepcopy
+from utilities import _is_safe_to_auto_move
 
-#basic 
 def create_deck():
-    suits = ["H", "D", "C", "S"]
+    suits = ['C', 'D', 'H', 'S'] 
     ranks = list(range(1, 14))
     
-    return [(s, r) for s in suits for r in ranks]
-
-def shuffle_deck(deck):
-    random.shuffle(deck)
+    deck = []
+    for r in ranks:
+        for s in suits:
+            deck.append((s, r))
     return deck
 
-def deal_cards(deck):
-    cascades = []
-    index = 0
+def create_initial_state(gamenumber: int):
+    indices = list(range(52))
     
-    for i in range(8):
-        if i < 4:
-            cascades.append(deck[index:index+7])
-            index += 7
-        else:
-            cascades.append(deck[index:index+6])
-            index += 6
+    seed = gamenumber
+    for i in range(51, 0, -1):
+        seed = (seed * 214013 + 2531011) & 0x7FFFFFFF
+        rand_val = (seed >> 16) & 0x7FFF
+        j = rand_val % (i + 1)
+        indices[i], indices[j] = indices[j], indices[i]
+        
+    indices.reverse()
     
-    return cascades
-
-def create_initial_state():
-    deck = shuffle_deck(create_deck())
+    deck = create_deck()
+    new_shuffled_deck = [deck[idx] for idx in indices]
     
+    cascades = [[] for _ in range(8)]
+    for i, card in enumerate(new_shuffled_deck):
+        target_col = i % 8 
+        cascades[target_col].append(card)
+        
     return {
-        "cascades": deal_cards(deck),
-        "freecells": [None]*4,
-        "foundations": {"H": 0, "D": 0, "C": 0, "S": 0}
+        "cascades": cascades,
+        "freecells": [None] * 4,
+        "foundations": {"H": 0, "D": 0, "C": 0, "S": 0},
     }
+
+if __name__ == "__main__":
+    # Test thử với ván bài 164
+    state = create_initial_state(164)
+    for i, col in enumerate(state["cascades"]):
+        print(f"Cột {i}: {col}")
+
+# Tạo màn chơi hướng dẫn
+def create_instruction_state(seed=None):
+    """
+    Hàm tạo initial state lever easy cho newbie/algorithm giải được
+    """
+    state = {
+        "cascades": [
+            [('S',13), ('H',12), ('S',11), ('D',10), ('C',9), ('H',8)],
+            [('C',12), ('D',11)],
+            [('H',11), ('C',13), ('S',7), ('H',13), ('C',3), ('D',13)],
+            [('S',8)],
+            [('D',12), ('C',11), ('H',10), ('S',9), ('D',8), ('C',7), ('H',6)],
+            [],
+            [],
+            [('C',10), ('D',9), ('C',8), ('H',7), ('C', 6), ('H',5), ('C',4)]
+        ],
+        "freecells": [('H', 9), ('S', 10), ('C',5), ('S',12)],
+        "foundations": {"H": 4, "D": 7, "C": 2, "S": 6},
+    }
+
+    return state
 
 #game_action
 def is_red(suit):
@@ -55,18 +84,33 @@ def get_moves(state):
     freecells = state["freecells"]
     foundations = state["foundations"]
 
+    #cascade -> foundation safe
+    for i,col in enumerate(cascades):
+        if col:
+            card = col[-1]
+            if can_move_to_foundation(card, foundations):
+                if _is_safe_to_auto_move(card, foundations):
+                    return [("cascade_to_foundation", i)]
+
+    #freecell -> foundation safe
+    for i, card in enumerate(freecells):
+        if card:
+            if can_move_to_foundation(card, foundations):
+                if _is_safe_to_auto_move(card, foundations):
+                    return [("freecell_to_foundation", i)]
+
     #cascade -> foundation
     for i,col in enumerate(cascades):
         if col:
             card = col[-1]
             if can_move_to_foundation(card, foundations):
-                moves.append(("cascade_to_foundation", i))
+                    moves.append(("cascade_to_foundation", i))
 
     #freecell -> foundation
     for i, card in enumerate(freecells):
         if card:
             if can_move_to_foundation(card, foundations):
-                moves.append(("freecell_to_foundation", i))
+                    moves.append(("freecell_to_foundation", i))
 
     #cascade -> freecell
     for i, col in enumerate(cascades):
@@ -114,10 +158,6 @@ def get_moves(state):
         # chỉ lấy 1 cột rỗng
         if empty_targets:
             moves.append(("cascade_to_cascade", i, empty_targets[0]))
-
-    foundation_moves = [m for m in moves if "foundation" in m[0]]
-    if foundation_moves:
-        return foundation_moves
 
     return moves
 
@@ -182,7 +222,3 @@ def state_to_tuple(state):
     foundations = tuple((k, state["foundations"][k]) for k in sorted(state["foundations"]))
     
     return (cascades, freecells, foundations)
-
-if __name__ == "__main__":
-    state = create_initial_state()
-    print(state_to_tuple(state))
