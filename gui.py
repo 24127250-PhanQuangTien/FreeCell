@@ -3,6 +3,7 @@ from game import create_initial_state
 from solver import bfs, dfs, ucs, astar
 from optimized import bfs_optimized, dfs_optimized, ucs_optimized, astar_optimized
 from test import create_easy_state
+from copy import deepcopy
 import threading
 import os
 from PIL import Image, ImageTk # Thư viện Pillow
@@ -22,9 +23,10 @@ class FreeCellGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("FreeCell")
-        self.root.geometry("1280x800")
+        self.root.geometry("1280x720")
 
         self.state = create_initial_state()
+        self.initial_state = deepcopy(self.state)
 
         self.card_images = {}
         self.load_images()
@@ -58,18 +60,52 @@ class FreeCellGUI:
         self.frame.pack()
 
         # Bàn chơi (Cascades)
-        self.canvas = tk.Canvas(self.frame, width=1280, height=600, bg="darkgreen")
+        self.canvas = tk.Canvas(self.frame, width=1280, height=600, bg="#003300", highlightthickness=0)
         self.canvas.pack()
 
-        # Buttons
-        self.button_frame = tk.Frame(self.root)
-        self.button_frame.pack(pady=10)
+        # Phần Info + Buttons
+        self.bottom_frame = tk.Frame(self.root, bg="#1E1E1E", height=150)
+        self.bottom_frame.pack(fill=tk.BOTH, expand=True)
 
-        tk.Button(self.button_frame, text="New Game", command=self.new_game).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.button_frame, text="BFS", command=self.solve_bfs).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.button_frame, text="DFS", command=self.solve_dfs).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.button_frame, text="UCS", command=self.solve_ucs).pack(side=tk.LEFT, padx=5)
-        tk.Button(self.button_frame, text="A*", command=self.solve_astar).pack(side=tk.LEFT, padx=5)
+        # 1. Khu vực hiển thị Info
+        self.info_frame = tk.Frame(self.bottom_frame, bg="#000000", bd=2, relief=tk.SUNKEN)
+        self.info_frame.pack(side=tk.LEFT, padx= 30, pady=15, fill=tk.X)
+
+        self.info_label = tk.Label(
+            self.bottom_frame, 
+            text="Ready.", 
+            fg="#00FF00", 
+            bg="#000000", 
+            font=("Consolas", 14, "bold"), 
+            justify=tk.LEFT,
+            anchor="w",
+            width=50, padx=15, pady=5
+        )
+        self.info_label.pack(side=tk.LEFT, padx=20)
+
+        # 2. Khu vực các nút bấm
+        self.button_frame = tk.Frame(self.bottom_frame, bg="#1E1E1E")
+        self.button_frame.pack(side=tk.RIGHT, padx=30, pady=15)
+
+        # Cấu hình chung cho nút
+        btn_font = ("Helvetica", 11, "bold")
+        btn_common = {
+            "font": btn_font, 
+            "fg": "#00DD00", 
+            "activeforeground": "white",
+            "relief": tk.FLAT,
+            "cursor": "hand2",
+            "width": 8,
+            "pady": 6
+        }
+
+        # Các nút chức năng
+        tk.Button(self.button_frame, text="New Game", command=self.new_game, bg="#003300", activebackground="#002200", **btn_common).pack(side=tk.LEFT, padx=5)
+        tk.Button(self.button_frame, text="Restart", command=self.restart_game, bg="#003300", activebackground="#002200",**btn_common).pack(side=tk.LEFT, padx=5)
+        tk.Button(self.button_frame, text="BFS", command=self.solve_bfs, bg="#003300", activebackground="#002200",**btn_common).pack(side=tk.LEFT, padx=5)
+        tk.Button(self.button_frame, text="DFS", command=self.solve_dfs, bg="#003300", activebackground="#002200",**btn_common).pack(side=tk.LEFT, padx=5)
+        tk.Button(self.button_frame, text="UCS", command=self.solve_ucs, bg="#003300", activebackground="#002200",**btn_common).pack(side=tk.LEFT, padx=5)
+        tk.Button(self.button_frame, text="A*", command=self.solve_astar, bg="#003300", activebackground="#002200",**btn_common).pack(side=tk.LEFT, padx=5)
 
         self.canvas.bind("<Button-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_drag)
@@ -158,6 +194,39 @@ class FreeCellGUI:
 
         # giảm 1
         return card[1] == top[1] - 1
+    
+    def get_card_str(self, card):
+        """Đổi lá bài thành chất (VD: (H, 13) -> K♥)"""
+        if not card: return "Empty"
+        suit_symbols = {"H": "♥", "D": "♦", "C": "♣", "S": "♠"}
+        value_map = {1: "A", 11: "J", 12: "Q", 13: "K"}
+        v = value_map.get(card[1], str(card[1]))
+        return f"{v}{suit_symbols[card[0]]}"
+
+    def get_move_info(self, state, move):
+        """Tạo mô tả cho hành động"""
+        move_type = move[0]
+        if move_type == "cascade_to_foundation": # Bàn chơi -> foundation
+            i = move[1]
+            card = state["cascades"][i][-1]
+            return f"Move {self.get_card_str(card)} from Column {i + 1} up to Foundation"
+        elif move_type == "freecell_to_foundation":
+            i = move[1]
+            card = state["freecells"][i]
+            return f"Move {self.get_card_str(card)} from FreeCell {i + 1} to Foundation"
+        elif move_type == "cascade_to_freecell":
+            i, j = move[1], move[2]
+            card = state["cascades"][i][-1]
+            return f"Move {self.get_card_str(card)} from Column {i + 1} up to FreeCell {j + 1}"
+        elif move_type == "freecell_to_cascade":
+            i, j = move[1], move[2]
+            card = state["freecells"][i]
+            return f"Move {self.get_card_str(card)} from FreeCell {i + 1} down to Column {j + 1}"
+        elif move_type == "cascade_to_cascade":
+            i, j = move[1], move[2]
+            card = state["cascades"][i][-1]
+            return f"Move {self.get_card_str(card)} from Column {i + 1} to Column {j + 1}"
+        return str(move)
 
 # ====================================
 # Nhóm xử lý tương tác chuột
@@ -427,7 +496,9 @@ class FreeCellGUI:
             color = "red" if suit in ["H", "D"] else "black"
             value_map = {1:"A", 11:"J", 12:"Q", 13:"K"}
             v = value_map.get(value, str(value))
-            text = f"{v}{suit}"
+
+            suit_symbols = {"H": "♥", "D": "♦", "C": "♣", "S": "♠"}
+            text = f"{v}{suit_symbols[suit]}"
 
             self.canvas.create_rectangle(
                 x, y, x + CARD_W, y + CARD_H,
@@ -436,17 +507,25 @@ class FreeCellGUI:
             )
             self.canvas.create_text(
                 x + CARD_W//2, y + CARD_H//2 - 30,
-                text=text, fill=color, font=("Arial", 12, "bold"),
+                text=text, fill=color, font=("Times New Roman", 12, "bold"),
                 tags=(tag, "text")
             )
+
     def play_solution(self, solution, index = 0):
         if index >= len(solution):
+            self.info_label.config(text= "Goal State achieved!")
             return
+        
         move = solution[index]
+        step_left = len(solution) - index
+        info = self.get_move_info(self.state, move)
+
+        self.info_label.config(text=f"Remain: {step_left} steps\nInfo: {info}")
             
         from game import apply_move
         self.state = apply_move(self.state, move)
         self.render()
+
         self.root.after(500, lambda: self.play_solution(solution, index + 1))
 
     def render(self):
@@ -468,12 +547,13 @@ class FreeCellGUI:
 
         # Vẽ 4 ô Foundations (bên phải)
         suits = ["H", "D", "C", "S"]
+        suit_symbols = {"H": "♥", "D": "♦", "C": "♣", "S": "♠"}
         for i, suit in enumerate(suits):
             x = START_X + (i + 4) * COL_GAP
             y = TOP_Y
             # Vẽ viền ô trống kèm chữ chìm
             self.canvas.create_rectangle(x, y, x + CARD_W, y + CARD_H, outline="lightgreen", width=2)
-            self.canvas.create_text(x + CARD_W//2, y + CARD_H//2, text=suit, fill="lightgreen", font=("Times New Roman", 24))
+            self.canvas.create_text(x + CARD_W//2, y + CARD_H//2, text=suit_symbols[suit], fill="lightgreen", font=("Times New Roman", 36))
 
             # Nếu có bài thêm vào thì sẽ nằm ở trên cùng
             val = self.state["foundations"][suit]
@@ -493,45 +573,64 @@ class FreeCellGUI:
 
     def new_game(self):
         self.state = create_initial_state()
+        self.initial_state = deepcopy(self.state)
+        self.info_label.config(text="Ready!")
+        self.render()
+    
+    def restart_game(self):
+        self.state = deepcopy(self.initial_state)
+        self.info_label.config(text="Again!")
         self.render()
 
     def solve_bfs(self):
+        self.info_label.config(text="Running BFS solution...")
         def run():
             result = bfs(self.state)
             print(result)
 
             if result["solution"]:
                 self.root.after(0, lambda: self.play_solution(result["solution"]))
+            else:
+                self.root.after(0, lambda: self.info_label.config(text="No solution found."))
 
         threading.Thread(target=run).start()
 
     def solve_dfs(self):
+        self.info_label.config(text="Running DFS solution...")
         def run():
             result = dfs(self.state)
             print(result)
 
             if result["solution"]:
                 self.root.after(0, lambda: self.play_solution(result["solution"]))
+            else:
+                self.root.after(0, lambda: self.info_label.config(text="No solution found."))
 
         threading.Thread(target=run).start()
 
     def solve_ucs(self):
+        self.info_label.config(text="Running UCS solution...")
         def run():
             result = ucs(self.state)
             print(result)
 
             if result["solution"]:
                 self.root.after(0, lambda: self.play_solution(result["solution"]))
+            else:
+                self.root.after(0, lambda: self.info_label.config(text="No solution found."))
 
         threading.Thread(target=run).start()
 
     def solve_astar(self):
+        self.info_label.config(text="Running A* solution...")
         def run():
             result = astar(self.state)
             print(result)
 
             if result["solution"]:
                 self.root.after(0, lambda: self.play_solution(result["solution"]))
+            else:
+                self.root.after(0, lambda: self.info_label.config(text="No solution found."))
 
         threading.Thread(target=run).start()
 
