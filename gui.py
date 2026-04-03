@@ -237,7 +237,7 @@ class FreeCellGUI:
     # Image loading
     # ─────────────────────────────────────
     def _load_images(self):
-        suits  = ["H", "D", "C", "S"]
+        suits  = ["C", "D", "H", "S"]
         values = range(1, 14)
         for suit in suits:
             for val in values:
@@ -372,7 +372,7 @@ class FreeCellGUI:
                 self._draw_card(x, y, card[0], card[1], "freecell", i)
 
         # ── Foundations (right 4)
-        suits = ["H", "D", "C", "S"]
+        suits = ["C", "D", "H", "S"]
         suit_sym = {"H": "♥", "D": "♦", "C": "♣", "S": "♠"}
         for i, suit in enumerate(suits):
             x = START_X + (i + 4) * COL_GAP
@@ -519,7 +519,7 @@ class FreeCellGUI:
         cascades = self.state["cascades"]
         try:
             if t in ("cascade_to_foundation", "freecell_to_foundation"):
-                suits = ["H", "D", "C", "S"]
+                suits = ["C", "D", "H", "S"]
                 # Find which foundation just changed
                 for i, s in enumerate(suits):
                     x = START_X + (i + 4) * COL_GAP
@@ -560,7 +560,7 @@ class FreeCellGUI:
         return -1
 
     def _get_foundation_from_xy(self, event):
-        suits = ["H", "D", "C", "S"]
+        suits = ["C", "D", "H", "S"]
         for i in range(4):
             fx = START_X + (i + 4) * COL_GAP
             if fx <= event.x <= fx + CARD_W and TOP_Y <= event.y <= TOP_Y + CARD_H:
@@ -589,6 +589,23 @@ class FreeCellGUI:
         top = cols[col_to][-1]
         return (self._is_red(card[0]) != self._is_red(top[0])) and (card[1] == top[1] - 1)
 
+    def _can_supermove(self, stack_size, col_from, col_to):
+        cascades  = self.state["cascades"]
+        freecells = self.state["freecells"]
+    
+        # N = số freecell rỗng
+        N = sum(1 for f in freecells if f is None)
+    
+        # M = số cascade rỗng, KHÔNG đếm col_to (dù rỗng — nó là đích, không phải intermediate)
+        # col_from KHÔNG trừ ra (nó chưa rỗng khi ta đang tính)
+        M = sum(
+            1 for i, c in enumerate(cascades)
+            if not c and i != col_to
+        )
+    
+        max_cards = (N + 1) * (2 ** M)
+        return stack_size <= max_cards
+
     # ─────────────────────────────────────
     # Mouse events
     # ─────────────────────────────────────
@@ -602,41 +619,85 @@ class FreeCellGUI:
         tag   = tags[0]
         parts = tag.split("_")
         col_str, row_str = parts[1], parts[2]
-
+    
+        # ── Freecell: chỉ kéo 1 lá
         if col_str == "freecell":
             i = int(row_str)
             if self.state["freecells"][i]:
-                self.drag_data.update({"tag": tag, "start_x": event.x, "start_y": event.y})
+                self.drag_data.update({
+                    "tag": tag, "col": "freecell", "row": i,
+                    "stack": [self.state["freecells"][i]],
+                    "start_x": event.x, "start_y": event.y
+                })
                 self.canvas.tag_raise(tag)
             return
+    
         if col_str == "foundation":
             return
-
-        col, row = int(col_str), int(row_str)
-        stack = self.state["cascades"][col][row:]
-        if not self._is_valid_stack(stack):
-            return
+    
+        col     = int(col_str)
+        cascade = self.state["cascades"][col]
+    
+        # ── Tính clicked_row từ tọa độ Y
+        clicked_row = len(cascade) - 1
+        for j in range(len(cascade) - 1):
+            card_top    = START_Y + j * CASCADE_Y_STEP
+            card_bottom = START_Y + (j + 1) * CASCADE_Y_STEP
+            if card_top <= event.y < card_bottom:
+                clicked_row = j
+                break
+    
+        # ── Tìm stack valid bắt đầu từ clicked_row
+        row   = len(cascade) - 1
+        stack = cascade[row:]
+        for start in range(clicked_row, len(cascade)):
+            candidate = cascade[start:]
+            if self._is_valid_stack(candidate):
+                row   = start
+                stack = candidate
+                break
+    
+        # ── Tính max_drag supermove (worst-case: không biết col_to nên không trừ col nào)
+        #    Dùng tất cả empty cascades trừ col hiện tại làm M (col hiện tại sắp có thể rỗng)
+        N = sum(1 for f in self.state["freecells"] if f is None)
+        M = sum(1 for i, c in enumerate(self.state["cascades"]) if not c and i != col)
+        max_drag = (N + 1) * (2 ** M)
+    
+        # Trim stack nếu vượt quá max_drag
+        if len(stack) > max_drag:
+            row   = len(cascade) - max_drag
+            stack = cascade[row:]
+    
+        # ── Update drag_data SAU KHI trim
         self.drag_data.update({
-            "tag": tag, "col": col, "row": row, "stack": stack,
+            "tag": f"card_{col}_{row}",
+            "col": col, "row": row, "stack": list(stack),
             "start_x": event.x, "start_y": event.y
         })
-        
-        for j in range(row, len(self.state["cascades"][col])):
+    
+        for j in range(row, len(cascade)):
             self.canvas.tag_raise(f"card_{col}_{j}")
+    
 
     def on_drag(self, event):
         tag = self.drag_data.get("tag")
         if not tag:
             return
+    
         dx = event.x - self.drag_data["start_x"]
         dy = event.y - self.drag_data["start_y"]
+    
         col = self.drag_data.get("col")
         row = self.drag_data.get("row")
-        if col is not None and isinstance(col, int):
+    
+        if isinstance(col, int):
+            # Kéo từ cascade: move tất cả lá từ row trở xuống
             for j in range(row, len(self.state["cascades"][col])):
                 self.canvas.move(f"card_{col}_{j}", dx, dy)
         else:
+            # Kéo từ freecell: move 1 lá theo tag
             self.canvas.move(tag, dx, dy)
+    
         self.drag_data["start_x"] = event.x
         self.drag_data["start_y"] = event.y
 
@@ -644,50 +705,77 @@ class FreeCellGUI:
         tag = self.drag_data.get("tag")
         if not tag:
             return
-        parts   = tag.split("_")
-        col_str, row_str = parts[1], parts[2]
-
+    
+        parts    = tag.split("_")
+        col_str  = parts[1]
+        row_str  = parts[2]
+    
+        # ── Thả từ freecell
         if col_str == "freecell":
             i      = int(row_str)
-            col_to = self._get_col_from_x(event.x)
-            if col_to != -1:
-                card = self.state["freecells"][i]
-                if card and self._is_valid_move(card, col_to):
+            card   = self.state["freecells"][i]
+            moved  = False
+    
+            if card:
+                # Thả vào cascade
+                col_to = self._get_col_from_x(event.x)
+                if col_to != -1 and self._is_valid_move(card, col_to):
                     self.state["freecells"][i] = None
                     self.state["cascades"][col_to].append(card)
+                    moved = True
+    
+                if not moved:
+                    # Thả vào foundation
+                    fs = self._get_foundation_from_xy(event)
+                    if fs and card[0] == fs and card[1] == self.state["foundations"][fs] + 1:
+                        self.state["freecells"][i] = None
+                        self.state["foundations"][fs] += 1
+    
             self.render()
             self.drag_data["tag"] = None
             return
-
+    
         col_from = int(col_str)
         row      = int(row_str)
         stack    = self.drag_data.get("stack", [])
-
-        # → freecell
+    
+        if not stack:
+            self.render()
+            self.drag_data["tag"] = None
+            return
+    
+        # ── Thả vào freecell (chỉ 1 lá)
         fc_idx = self._get_freecell_from_xy(event)
         if fc_idx != -1:
             if len(stack) == 1 and self.state["freecells"][fc_idx] is None:
                 self.state["cascades"][col_from].pop()
                 self.state["freecells"][fc_idx] = stack[0]
-            self.render(); self.drag_data["tag"] = None; return
-
-        # → foundation
+            self.render()
+            self.drag_data["tag"] = None
+            return
+    
+        # ── Thả vào foundation (chỉ 1 lá)
         fs = self._get_foundation_from_xy(event)
-        if fs and len(stack) == 1:
-            card = stack[0]
-            if card[0] == fs and card[1] == self.state["foundations"][fs] + 1:
-                self.state["cascades"][col_from].pop()
-                self.state["foundations"][fs] += 1
-            self.render(); self.drag_data["tag"] = None; return
-
-        # → cascade
+        if fs:
+            if len(stack) == 1:
+                card = stack[0]
+                if card[0] == fs and card[1] == self.state["foundations"][fs] + 1:
+                    self.state["cascades"][col_from].pop()
+                    self.state["foundations"][fs] += 1
+            self.render()
+            self.drag_data["tag"] = None
+            return
+    
+        # ── Thả vào cascade (có thể supermove)
         col_to = self._get_col_from_x(event.x)
-        if 0 <= col_to < 8 and stack:
-            if self._is_valid_move(stack[0], col_to):
-                for _ in stack:
+        if 0 <= col_to < 8 and col_to != col_from:
+            # Lá tiếp xúc với col_to là stack[0] (lá dưới cùng, rank lớn nhất)
+            if self._is_valid_move(stack[0], col_to) and self._can_supermove(len(stack), col_from, col_to):
+                # Pop đúng số lá = len(stack) từ col_from
+                for _ in range(len(stack)):
                     self.state["cascades"][col_from].pop()
                 self.state["cascades"][col_to].extend(stack)
-
+    
         self.render()
         self.drag_data["tag"] = None
 
@@ -744,15 +832,18 @@ class FreeCellGUI:
     def new_game(self):
         dlg = SeedDialog(self.root)
         self.root.wait_window(dlg)
-        if dlg.result is not None:
-            import random as _r
-            _r.seed(dlg.result)
-            self.status_var.set(f"Seed: {dlg.result}")
-        else:
-            self.status_var.set("Ngẫu nhiên")
+
         self._cancel_anim()
         self.move_log.clear()
-        self.state = create_initial_state(random.randint(1, 9999))
+
+        if dlg.result is not None:
+            self.status_var.set(f"Seed: {dlg.result}")
+            self.state = create_initial_state(dlg.result)
+        else:
+            random_seed = random.randint(1, 32000)
+            self.status_var.set(f"Ngẫu nhiên (Seed: {random_seed})")
+            self.state = create_initial_state(random_seed)
+
         self.render()
 
     def _cancel_anim(self):
@@ -816,15 +907,3 @@ class FreeCellGUI:
 
     def solve_astar(self):
         self._run_solver("A★", astar_optimized)
-
-
-# ─────────────────────────────────────────
-# Entry point
-# ─────────────────────────────────────────
-if __name__ == "__main__":
-    root = tk.Tk()
-    app  = FreeCellGUI(root)
-    try:
-        root.mainloop()
-    except KeyboardInterrupt:
-        print("\nĐã tắt game.")

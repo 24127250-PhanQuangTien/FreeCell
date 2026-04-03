@@ -41,50 +41,40 @@ def id_to_card(cid: int):
 # ──────────────────────────────────────────────
 
 def encode_state(state) -> int:
-    """
-    Encode toàn bộ game state thành 1 Python big integer.
-    Đây là hàm thay thế cho state_to_tuple() cũ.
-
-    Ưu điểm:
-      - Hashing O(length_in_digits) nhưng thực tế rất nhanh
-      - Tốn ~56 bytes/entry trong set thay vì 200-400 bytes của nested tuple
-    """
     key = 0
 
-    # --- foundations (16 bits) ---
+    # ── foundations ───────────────────────
     fnd = state["foundations"]
     for i, suit in enumerate(SUITS):
         key |= (fnd[suit] & 0xF) << (OFFSET_FOUNDATION + i * BITS_FOUNDATION)
 
-    # --- freecells (24 bits) ---
-    # Normalize: sort freecells để {A,None,B,None} ≡ {B,None,A,None}
-    # Dùng canonical form: None → 63, cards sort ascending
-    fc = state["freecells"]
+    # ── freecells (sorted canonical) ──────
     fc_ids = sorted(
         card_to_id(c) if c is not None else EMPTY_CARD
-        for c in fc
+        for c in state["freecells"]
     )
     for i, cid in enumerate(fc_ids):
         key |= (cid & 0x3F) << (OFFSET_FREECELLS + i * BITS_FREECELL)
 
-    # --- cascade lengths + cards (24 + 624 bits) ---
-    # Normalize: các cột rỗng là equivalent → đặt cuối
+    # ── cascades (OPTIMIZED) ──────────────
     cascades = state["cascades"]
-    # Sort: non-empty trước, empty sau; non-empty sort by content để canonical
+
+    # ⚠️ KHÔNG sort full cascades nữa
+    # chỉ gom non-empty trước, empty sau
     nonempty = [col for col in cascades if col]
     empty_count = 8 - len(nonempty)
-    # Sort non-empty cascades để đổi chỗ 2 cột rỗng không tạo state mới
-    nonempty_sorted = sorted(nonempty, key=lambda col: tuple(card_to_id(c) for c in col))
-    cols_normalized = nonempty_sorted + [[]] * empty_count
 
-    for col_idx, col in enumerate(cols_normalized):
+    cols = nonempty + [[]] * empty_count
+
+    for col_idx, col in enumerate(cols):
         length = len(col)
         key |= (length & 0x7) << (OFFSET_COL_LENS + col_idx * BITS_COL_LEN)
 
+        base = OFFSET_CARDS + col_idx * MAX_CARDS_PER_COL * BITS_PER_CARD
+
         for row, card in enumerate(col):
             cid = card_to_id(card)
-            bit_pos = OFFSET_CARDS + (col_idx * MAX_CARDS_PER_COL + row) * BITS_PER_CARD
-            key |= (cid & 0x3F) << bit_pos
+            key |= (cid & 0x3F) << (base + row * BITS_PER_CARD)
 
     return key
 
@@ -195,84 +185,133 @@ def apply_safe_auto_moves(state_parent) -> tuple:
 # ──────────────────────────────────────────────
 
 def filter_dominated_moves(moves, state) -> list:
-    """
-    Loại bỏ các moves bị dominated
-
-    1. Nếu đã có move cascade/freecell → foundation an toàn, bỏ tất cả move
-    2. cascade_to_freecell: xem tất cả ô freecell rỗng là TƯƠNG ĐƯƠNG nhau.
-    3. freecell_to_cascade: tương tự, mỗi lá trong freecell chỉ cần 1 move
-       per cột đích (không trùng lặp do slot khác nhau).
-    5. Không cho cascade→freecell nếu có cascade→cascade hợp lệ cho lá đó
-       (ưu tiên sắp xếp hơn là cất vào freecell).
-    """
-    # Rule 1: foundation moves
-    foundation_moves = [m for m in moves if "foundation" in m[0]]
-    
-    safe_foundation_moves = []
-    for m in foundation_moves:
-        if m[0] == "cascade_to_foundation":
-            card = state["cascades"][m[1]][-1]
-        else:  # freecell_to_foundation
-            card = state["freecells"][m[1]]
-        if _is_safe_to_auto_move(card, state["foundations"]):
-            safe_foundation_moves.append(m)
-    
-    # Chỉ chặn khi có SAFE foundation move
-    if safe_foundation_moves:
-        return safe_foundation_moves
-
-    freecells = state["freecells"]
-    cascades  = state["cascades"]
-
-    # Tìm ô freecell rỗng đầu tiên (đại diện cho tất cả ô rỗng)
-    first_empty_fc = next((i for i, c in enumerate(freecells) if c is None), None)
-
-    # Các lá cascade có move cascade→cascade hợp lệ
-    cards_with_cascade_move = set()
+    freecells   = state["freecells"]
+    cascades    = state["cascades"]
+    foundations = state["foundations"]
+ 
+    # ── [R1] Safe foundation priority ────────────────────────────────────────
+    safe_fnd = []
     for m in moves:
-        if m[0] == "cascade_to_cascade":
-            col = cascades[m[1]]
-            if col:
-                cards_with_cascade_move.add(col[-1])
-
-    filtered = []
-    seen_cascade_to_freecell = set()   # set of (col_idx) đã thêm
-    seen_freecell_to_cascade  = set()   # set of (fc_card, dest_col) đã thêm
-
+        if "foundation" not in m[0]:
+            continue
+        card = cascades[m[1]][-1] if m[0] == "cascade_to_foundation" \
+               else freecells[m[1]]
+        if _is_safe_to_auto_move(card, foundations):
+            safe_fnd.append(m)
+    if safe_fnd:
+        return safe_fnd
+ 
+    # ── Precompute context ────────────────────────────────────────────────────
+    first_empty_fc = next((i for i, c in enumerate(freecells) if c is None), None)
+    empty_fc_count = sum(1 for c in freecells if c is None)
+ 
+    empty_col_idxs  = [i for i, col in enumerate(cascades) if not col]
+    first_empty_col = empty_col_idxs[0] if empty_col_idxs else None
+ 
+    # Phân loại cascade→cascade moves
+    cards_with_real_cascade = set()   # lá có dest non-empty (stack thật)
+    cards_with_any_cascade  = set()   # lá có bất kỳ cascade→cascade nào
+    for m in moves:
+        if m[0] != "cascade_to_cascade":
+            continue
+        col = cascades[m[1]]
+        if not col:
+            continue
+        card = col[-1]
+        cards_with_any_cascade.add(card)
+        if cascades[m[2]]:   # non-empty dest
+            cards_with_real_cascade.add(card)
+ 
+    # ── Filter loop ───────────────────────────────────────────────────────────
+    filtered  = []
+    seen_c2f  = set()    # source col idx đã sinh cascade→freecell
+    seen_f2c  = set()    # (card, dst_col) đã sinh freecell→cascade non-empty
+    seen_f2e  = False    # đã sinh freecell→empty move chưa
+    seen_c2e  = set()    # source col đã sinh cascade→empty
+ 
     for move in moves:
         mtype = move[0]
-
+ 
+        # ── cascade→freecell ─────────────────────────────────────────────────
         if mtype == "cascade_to_freecell":
             col_idx = move[1]
             col = cascades[col_idx]
-            if not col:
+            if not col or first_empty_fc is None:
                 continue
             card = col[-1]
-            # Rule 5: nếu lá này có thể đi cascade→cascade, đừng cất vào freecell
-            if card in cards_with_cascade_move:
+ 
+            # [R4] có stack thật → không cất freecell
+            if card in cards_with_real_cascade:
                 continue
-            # Rule 2: mỗi cột cascade chỉ sinh 1 move duy nhất vào freecell
-            if col_idx in seen_cascade_to_freecell:
+ 
+            # [R2] dedup source col
+            if col_idx in seen_c2f:
                 continue
-            if first_empty_fc is None:
-                continue
-            # Normalize: luôn dùng first_empty_fc làm slot đích
-            seen_cascade_to_freecell.add(col_idx)
+ 
+            # # [R8] freecell cạn + lá hoàn toàn vô dụng hiện tại → skip
+            # if empty_fc_count == 1 and card not in cards_with_any_cascade:
+            #     suit, rank = card
+            #     steps_to_fnd = rank - foundations[suit]   # số bước để lên fnd
+            #     if steps_to_fnd > 2:
+            #         continue   # Lá này chiếm ô freecell cuối mà không có ích gì
+ 
+            seen_c2f.add(col_idx)
             filtered.append(("cascade_to_freecell", col_idx, first_empty_fc))
             continue
-
+ 
+        # ── freecell→cascade ─────────────────────────────────────────────────
         if mtype == "freecell_to_cascade":
             fc_idx  = move[1]
             dst_col = move[2]
             card    = freecells[fc_idx]
             if card is None:
                 continue
-            # Rule 3: dedup (card, dest) — bất kể slot freecell nào
-            key = (card, dst_col)
-            if key in seen_freecell_to_cascade:
+ 
+            if not cascades[dst_col]:   # empty dest
+                # [R5] chỉ giữ 1 move freecell→empty: lá rank cao nhất
+                if seen_f2e:
+                    continue
+                best = max(
+                    (c for c in freecells if c is not None),
+                    key=lambda c: c[1]   # rank cao nhất
+                )
+                if card != best:
+                    continue
+                seen_f2e = True
+                # Normalize dest → first empty col
+                filtered.append(("freecell_to_cascade", fc_idx, first_empty_col))
                 continue
-            seen_freecell_to_cascade.add(key)
-
+            else:
+                # [R3] dedup (card, dest) non-empty
+                key = (card, dst_col)
+                if key in seen_f2c:
+                    continue
+                seen_f2c.add(key)
+ 
+            filtered.append(move)
+            continue
+ 
+        # ── cascade→cascade ──────────────────────────────────────────────────
+        if mtype == "cascade_to_cascade":
+            src_col = move[1]
+            dst_col = move[2]
+            col = cascades[src_col]
+            if not col:
+                continue
+            card = col[-1]
+ 
+            if not cascades[dst_col]:   # empty dest
+                # [R7] đã có stack thật → không waste empty slot
+                if card in cards_with_real_cascade:
+                    continue
+ 
+                # [R6] dedup source col → normalize về first_empty_col
+                if src_col in seen_c2e:
+                    continue
+                seen_c2e.add(src_col)
+                filtered.append(("cascade_to_cascade", src_col, first_empty_col))
+                continue
+ 
         filtered.append(move)
-
+ 
     return filtered if filtered else moves
