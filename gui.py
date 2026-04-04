@@ -15,13 +15,13 @@ from optimized import bfs_optimized, dfs_optimized, ucs_optimized, astar_optimiz
 CARD_W    = 90
 CARD_H    = 120
 COL_GAP   = 118
-START_X   = 100
+START_X   = 67
 START_Y   = 170
 TOP_Y     = 14
 CASCADE_Y_STEP = 32
 
 WIN_W     = 1050
-WIN_H     = 820
+WIN_H     = 720
 
 # Bottom bar height
 BAR_H     = 56
@@ -466,24 +466,27 @@ class FreeCellGUI:
         self.move_log.set_index(index)
 
         move = solution[index]
+        prev_state = self.state
+        
         self.state = apply_move(self.state, move)
 
-        # Flash highlight on moved card (simulate drag feel)
-        self._flash_move(move, callback=lambda: (
+        self._flash_move(move, prev_state, callback=lambda: (
             self.render(),
             setattr(self, '_anim_job',
                 self.root.after(delay_ms,
                     lambda: self.play_solution(solution, index + 1, delay_ms)))
         ))
 
-    def _flash_move(self, move, callback):
+    def _flash_move(self, move, prev_state, callback):
         """
         Brief highlight effect: 
         Draw a glowing rectangle on the destination then call callback.
         """
         self.render()
         # Determine destination coords
-        dest_x, dest_y = self._move_dest_coords(move)
+        
+        dest_x, dest_y = self._move_dest_coords(move, prev_state)
+        
         if dest_x is not None:
             flash_id = self.canvas.create_rectangle(
                 dest_x - 3, dest_y - 3,
@@ -516,17 +519,26 @@ class FreeCellGUI:
             pass
         self.root.after(50, lambda: self._fade_flash(item_id, steps, callback, step + 1))
 
-    def _move_dest_coords(self, move):
+    def _move_dest_coords(self, move, prev_state):
         """Return pixel (x, y) of destination card after move."""
         t = move[0]
         cascades = self.state["cascades"]
         try:
             if t in ("cascade_to_foundation", "freecell_to_foundation"):
                 suits = ["C", "D", "H", "S"]
-                # Find which foundation just changed
-                for i, s in enumerate(suits):
-                    x = START_X + (i + 4) * COL_GAP
-                    return x, TOP_Y
+                
+                if t == "cascade_to_foundation":
+                    col_idx = move[1]
+                    suit = prev_state["cascades"][col_idx][-1][0]
+                else:
+                    fc_idx = move[1]
+                    suit = prev_state["freecells"][fc_idx][0]
+                
+                # Tính toạ độ đúng theo suit đó
+                i = suits.index(suit)
+                x = START_X + (i + 4) * COL_GAP
+                return x, TOP_Y
+                
             if t == "cascade_to_freecell":
                 j = move[2]
                 return START_X + j * COL_GAP, TOP_Y
