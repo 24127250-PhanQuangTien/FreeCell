@@ -6,20 +6,67 @@ import random
 import copy
 from PIL import Image, ImageTk
 
-from game import create_initial_state, create_instruction_state, apply_move
-from solver import bfs, dfs, ucs, astar
 from optimized import bfs_optimized, dfs_optimized, ucs_optimized, astar_optimized
+import game as _game_module
+from utilities import SUITS, SUIT_IDX, EMPTY
+
+# ─────────────────────────────────────────
+# Compatibility layer
+# GUI dùng state format cũ (dict + list + None) vì drag-drop mutate trực tiếp.
+# Các hàm bên dưới bridge GUI ↔ int-based game.py / solver.
+# ─────────────────────────────────────────
+_SUIT_ORDER = ["H", "D", "C", "S"]   # khớp index 0-3 trong foundations tuple
+
+def _to_int_state(gui_state: dict) -> dict:
+    """GUI state → int-based state (cho solver / apply_move nội bộ)."""
+    foundations = tuple(gui_state["foundations"][s] for s in _SUIT_ORDER)
+    freecells   = tuple(
+        SUIT_IDX[c[0]] * 13 + (c[1] - 1) if c is not None else EMPTY
+        for c in gui_state["freecells"]
+    )
+    cascades = tuple(
+        tuple(SUIT_IDX[s] * 13 + (r - 1) for s, r in col)
+        for col in gui_state["cascades"]
+    )
+    return {"foundations": foundations, "freecells": freecells, "cascades": cascades}
+
+
+def _to_gui_state(int_state: dict) -> dict:
+    """Int-based state → GUI state (sau apply_move)."""
+    foundations = {s: int_state["foundations"][i] for i, s in enumerate(_SUIT_ORDER)}
+    freecells   = [
+        (SUITS[c // 13], c % 13 + 1) if c != EMPTY else None
+        for c in int_state["freecells"]
+    ]
+    cascades = [
+        [(SUITS[c // 13], c % 13 + 1) for c in col]
+        for col in int_state["cascades"]
+    ]
+    return {"foundations": foundations, "freecells": freecells, "cascades": cascades}
+
+
+def apply_move(gui_state: dict, move) -> dict:
+    """Wrapper: nhận GUI state, trả GUI state. Bridge qua game.apply_move."""
+    return _to_gui_state(_game_module.apply_move(_to_int_state(gui_state), move))
+
+
+def create_initial_state(gamenumber: int) -> dict:
+    return _to_gui_state(_game_module.create_initial_state(gamenumber))
+
+
+def create_instruction_state() -> dict:
+    return _to_gui_state(_game_module.create_instruction_state())
 
 # ─────────────────────────────────────────
 # Layout constants
 # ─────────────────────────────────────────
 CARD_W    = 96
 CARD_H    = 144
-COL_GAP   = 142   # Tăng lên 140 để thẻ bài (128) có khoảng hở 12px, không đè ngang
-START_X   = 95    # Căn giữa hoàn hảo: (1280 - (7*140 + 128)) / 2 = 86
-START_Y   = 260   # Đẩy xuống 230 để không bị đè vào hàng trên (10 + 192 = 202)
-TOP_Y     = 80    # Lề trên
-CASCADE_Y_STEP = 32 # Độ xếp chồng vừa phải
+COL_GAP   = 142
+START_X   = 95
+START_Y   = 260
+TOP_Y     = 80
+CASCADE_Y_STEP = 32
 
 WIN_W     = 1280
 WIN_H     = 720
@@ -29,25 +76,23 @@ BAR_H     = 56
 # MOVE_LOG_H = 80   # height of move-log strip above buttons
 
 # Colors (Regal Blue & Gold Theme)
-BG          = "#0a1128"  # Nền ngoài cùng (Xanh Navy cực tối, tôn lên màu vàng)
-FELT        = "#102a43"  # Lót bàn chơi (Xanh lam thẫm, dịu mắt)
-BTN_BG      = "#1e3a8a"  # Xanh dương đậm hoàng gia (Royal Blue - giữ nguyên)
-BTN_ACTIVE  = "#2563eb"  # Xanh dương sáng khi di chuột (giữ nguyên)
-BTN_BORDER  = "#3b82f6"  # Viền nút (giữ nguyên)
+BG          = "#0a1128"
+FELT        = "#102a43"
+BTN_BG      = "#1e3a8a"
+BTN_ACTIVE  = "#2563eb"
+BTN_BORDER  = "#3b82f6"
 
-LOG_BG      = "#0f172a"  # Bảng log xanh đen (sáng hơn BG một chút để tạo khối)
-LOG_BORDER  = "#1e40af"  # Viền bảng log xanh lam
+LOG_BG      = "#0f172a"
+LOG_BORDER  = "#1e40af"
 
-# --- HỆ THỐNG MÀU NHẤN VÀ TEXT TONE VÀNG ---
-ACCENT      = "#fcd34d"  # Màu nhấn (Vàng sáng)
-ACCENT2     = "#f59e0b"  # Màu nhấn 2 (Vàng hổ phách / Amber cho chiến thắng)
+ACCENT      = "#fcd34d"
+ACCENT2     = "#f59e0b"
 
-BTN_TEXT    = "#fef08a"  # Chữ trên nút (Vàng rực rỡ)
-TEXT_DIM    = "#bca878"  # Chữ làm mờ (Vàng đồng cũ, hơi trầm xuống)
-TEXT_MID    = "#eab308"  # Chữ thường (Vàng kim loại, nổi bật trên nền xanh)
-TEXT_BRIGHT = "#fffbeb"  # Chữ sáng chói (Vàng kem cực sáng cho các highlight)
+BTN_TEXT    = "#fef08a" 
+TEXT_DIM    = "#bca878"
+TEXT_MID    = "#eab308"
+TEXT_BRIGHT = "#fffbeb"
 
-# (Tùy chọn) Đổi màu chất bích/chuồn từ đen sang xanh đen cực thẫm để tone-sur-tone
 SUIT_COLOR  = {"H": "#ef5350", "D": "#e9413e", "C": "#000000", "S": "#000000"}
 
 
@@ -242,6 +287,7 @@ class FreeCellGUI:
         self._solving   = False   # lock during solve
         self._anim_job  = None    # after() id for cancel
         self._solution  = []
+        self._cancel_flag = False
 
         self._build_ui()
         self.render()
@@ -505,6 +551,7 @@ class FreeCellGUI:
         prev_state = copy.deepcopy(self.state)
         self.state = apply_move(self.state, move)
 
+        # Flash highlight on moved card (simulate drag feel)
         self._flash_move(move, prev_state, callback=lambda: (
             self.render(),
             setattr(self, '_anim_job',
@@ -512,16 +559,14 @@ class FreeCellGUI:
                     lambda: self.play_solution(solution, index + 1, delay_ms)))
         ))
 
-    def _flash_move(self, move, prev_state, callback):
+    def _flash_move(self, move, state_before, callback):
         """
         Brief highlight effect: 
         Draw a glowing rectangle on the destination then call callback.
         """
         self.render()
         # Determine destination coords
-        
-        dest_x, dest_y = self._move_dest_coords(move, prev_state)
-        
+        dest_x, dest_y = self._move_dest_coords(move, state_before)
         if dest_x is not None:
             flash_id = self.canvas.create_rectangle(
                 dest_x - 3, dest_y - 3,
@@ -561,26 +606,26 @@ class FreeCellGUI:
         
         self._anim_job = self.root.after(50, lambda: self._fade_flash(item_id, steps, callback, step + 1))
 
-    def _move_dest_coords(self, move, prev_state):
+    def _move_dest_coords(self, move, state_before):
         """Return pixel (x, y) of destination card after move."""
         t = move[0]
         cascades = self.state["cascades"]
         try:
-            if t in ("cascade_to_foundation", "freecell_to_foundation"):
-                suits = ["C", "D", "H", "S"]
-                
-                if t == "cascade_to_foundation":
-                    col_idx = move[1]
-                    suit = prev_state["cascades"][col_idx][-1][0]
-                else:
-                    fc_idx = move[1]
-                    suit = prev_state["freecells"][fc_idx][0]
-                
-                # Tính toạ độ đúng theo suit đó
-                i = suits.index(suit)
-                x = START_X + (i + 4) * COL_GAP
-                return x, TOP_Y
-                
+            if t == "cascade_to_foundation":
+                # Lá vừa move: lấy từ state_before (cascade src còn đầy đủ)
+                src_col = move[1]
+                card = state_before["cascades"][src_col][-1]   # (suit, rank)
+                suit = card[0]
+                i = ["C", "D", "H", "S"].index(suit)
+                return START_X + (i + 4) * COL_GAP, TOP_Y
+
+            if t == "freecell_to_foundation":
+                # Lá vừa move: lấy từ state_before (freecell src còn đầy đủ)
+                fc_idx = move[1]
+                card = state_before["freecells"][fc_idx]       # (suit, rank)
+                suit = card[0]
+                i = ["C", "D", "H", "S"].index(suit)
+                return START_X + (i + 4) * COL_GAP, TOP_Y
             if t == "cascade_to_freecell":
                 j = move[2]
                 return START_X + j * COL_GAP, TOP_Y
@@ -602,6 +647,11 @@ class FreeCellGUI:
     # ─────────────────────────────────────
     # Helpers
     # ─────────────────────────────────────
+    def _check_victory(self):
+        """Kiểm tra chiến thắng sau mỗi nước đi thủ công."""
+        if all(v == 13 for v in self.state["foundations"].values()):
+            self._show_victory()
+
     def _get_col_from_x(self, x):
         for i in range(len(self.state["cascades"])):
             left  = START_X + i * COL_GAP - COL_GAP // 2
@@ -791,6 +841,7 @@ class FreeCellGUI:
                         self.state["foundations"][fs] += 1
     
             self.render()
+            self._check_victory()
             self.drag_data["tag"] = None
             return
     
@@ -822,6 +873,7 @@ class FreeCellGUI:
                     self.state["cascades"][col_from].pop()
                     self.state["foundations"][fs] += 1
             self.render()
+            self._check_victory()
             self.drag_data["tag"] = None
             return
     
@@ -860,7 +912,9 @@ class FreeCellGUI:
             if val == self.state["foundations"][suit] + 1:
                 self.state["freecells"][i] = None
                 self.state["foundations"][suit] += 1
-            self.render(); return
+            self.render()
+            self._check_victory()
+            return
 
         col, row = int(col_str), int(row_str)
         if row != len(self.state["cascades"][col]) - 1:
@@ -871,7 +925,9 @@ class FreeCellGUI:
         if val == self.state["foundations"][suit] + 1:
             self.state["cascades"][col].pop()
             self.state["foundations"][suit] += 1
-            self.render(); return
+            self.render()
+            self._check_victory()
+            return
 
         for i in range(len(self.state["cascades"])):
             if self._is_valid_move(card, i):
@@ -956,7 +1012,7 @@ class FreeCellGUI:
         self._show_cancel_btn()
 
         def worker():
-            result = fn(self.state)
+            result = fn(_to_int_state(self.state))
             def done():
                 self._hide_cancel_btn()
 
