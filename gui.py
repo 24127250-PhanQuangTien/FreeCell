@@ -4,6 +4,7 @@ import threading
 import os
 import random
 import copy
+import csv
 from PIL import Image, ImageTk
 
 from optimized import bfs_optimized, dfs_optimized, ucs_optimized, astar_optimized
@@ -123,43 +124,44 @@ class SeedDialog(tk.Toplevel):
         super().__init__(parent)
         self.result = None
         self.title("New Game")
-        self.configure(bg=BG)
+        self.configure(bg=FELT)
         self.resizable(False, False)
         self.grab_set()
         self._cancel_flag = False
 
-        # Center on parent
-        self.geometry(f"340x220+{parent.winfo_rootx()+350}+{parent.winfo_rooty()+250}")
+        self.geometry(f"360x220+{parent.winfo_rootx()+460}+{parent.winfo_rooty()+250}")
 
         # Title
-        tk.Label(self, text="🂠  NEW GAME", font=("Consolas", 15, "bold"),
-                 fg=ACCENT, bg=BG).pack(pady=(22, 4))
+        tk.Label(self, text="🂠  NEW GAME", font=("Georgia", 16, "bold"),
+                 fg=ACCENT, bg=FELT).pack(pady=(20, 6))
+                 
         tk.Label(self, text="Nhập seed để tái tạo ván bài,\nhoặc để trống để deal ngẫu nhiên.",
-                 font=("Consolas", 9), fg=TEXT_MID, bg=BG, justify="center").pack()
+                 font=("Consolas", 10), fg=TEXT_BRIGHT, bg=FELT, justify="center").pack()
 
         # Seed entry
-        frame = tk.Frame(self, bg=BG)
-        frame.pack(pady=14)
-        tk.Label(frame, text="Seed:", font=("Consolas", 10, "bold"),
-                 fg=BTN_TEXT, bg=BG).pack(side=tk.LEFT, padx=6)
-        self.entry = tk.Entry(frame, width=16, font=("Consolas", 12),
-                              bg=LOG_BG, fg=ACCENT, insertbackground=ACCENT,
-                              relief="flat", bd=4)
+        frame = tk.Frame(self, bg=FELT)
+        frame.pack(pady=16)
+        tk.Label(frame, text="Seed:", font=("Consolas", 11, "bold"),
+                 fg=BTN_TEXT, bg=FELT).pack(side=tk.LEFT, padx=6)
+                 
+        self.entry = tk.Entry(frame, width=16, font=("Consolas", 12, "bold"),
+                              bg=LOG_BG, fg=ACCENT2, insertbackground=ACCENT2,
+                              relief="solid", bd=1, highlightthickness=1, highlightbackground=BTN_BORDER)
         self.entry.pack(side=tk.LEFT)
 
         # Buttons
-        btn_frame = tk.Frame(self, bg=BG)
+        btn_frame = tk.Frame(self, bg=FELT)
         btn_frame.pack(pady=6)
 
         def make_btn(parent, text, cmd, accent=False):
             c = ACCENT if accent else BTN_BG
             tc = BG if accent else BTN_TEXT
             b = tk.Button(parent, text=text, command=cmd,
-                          font=("Consolas", 9, "bold"),
+                          font=("Consolas", 10, "bold"),
                           bg=c, fg=tc, activebackground=BTN_ACTIVE,
                           activeforeground=TEXT_BRIGHT, relief="flat",
-                          bd=0, padx=14, pady=7, cursor="hand2")
-            b.pack(side=tk.LEFT, padx=6)
+                          bd=0, padx=16, pady=6, cursor="hand2")
+            b.pack(side=tk.LEFT, padx=8)
             return b
 
         make_btn(btn_frame, "Random", self._random)
@@ -410,16 +412,39 @@ class FreeCellGUI:
     def _show_victory(self):
         cx = WIN_W // 2
         cy = (WIN_H - BAR_H) // 2
+
+        stats_text = "Bạn đã xuất sắc giải xong màn chơi!"
+        
+        if getattr(self, '_solved_by_bot', False):
+            try:
+                csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "solver_runs.csv")
+                with open(csv_path, "r", encoding="utf-8") as f:
+                    lines = list(csv.DictReader(f))
+                    if lines:
+                        last_run = lines[-1]
+                        algo = last_run.get("algorithm", "A★")
+                        time_sec = last_run.get("time_sec", "0")
+                        nodes = last_run.get("expanded_nodes", "0")
+                        mem = last_run.get("memory_peak_traced_mb", "0")
+                        moves = last_run.get("solution_length", "0")
+                        
+                        stats_text = (f"Thuật toán: {algo} | Nước đi: {moves}\n"
+                                      f"Thời gian: {time_sec}s | Nodes: {nodes}\n"
+                                      f"Bộ nhớ tiêu thụ: {mem} MB")
+            except Exception:
+                stats_text = "Bot đã giải xong ván bài! (Không thể đọc file CSV)"
+
         self.canvas.create_rectangle(
-            cx-280, cy-90, cx+280, cy+90,
+            cx-320, cy-110, cx+320, cy+110,
             fill="#1a1200", outline=ACCENT2, width=4, tags="victory")
-        self.canvas.create_text(cx+3, cy-22+3, text="🏆  VICTORY  🏆",
+        
+        self.canvas.create_text(cx+3, cy-45+3, text="🏆  VICTORY  🏆",
             font=("Georgia", 38, "bold"), fill="#5a4000", tags="victory")
-        self.canvas.create_text(cx, cy-22, text="🏆  VICTORY  🏆",
+        self.canvas.create_text(cx, cy-45, text="🏆  VICTORY  🏆",
             font=("Georgia", 38, "bold"), fill=ACCENT2, tags="victory")
-        self.canvas.create_text(cx, cy+32, text="Bạn đã giải xong ván bài!",
-            font=("Georgia", 14), fill="#ffe082", tags="victory")
-        self.canvas.create_text(cx, cy+62, text="[ Click để tiếp tục ]",
+        self.canvas.create_text(cx, cy+25, text=stats_text,
+            font=("Consolas", 14), fill="#ffe082", justify=tk.CENTER, tags="victory")
+        self.canvas.create_text(cx, cy+85, text="[ Click để tiếp tục ]",
             font=("Georgia", 10), fill=TEXT_DIM, tags="victory")
         self.canvas.tag_bind("victory", "<Button-1>", lambda e: self.canvas.delete("victory"))
 
@@ -945,6 +970,7 @@ class FreeCellGUI:
     # Button commands
     # ─────────────────────────────────────
     def new_game(self):
+        self._solved_by_bot = False
         dlg = SeedDialog(self.root)
         self.root.wait_window(dlg)
 
@@ -963,6 +989,7 @@ class FreeCellGUI:
         self.render()
 
     def restart_game(self):
+        self._solved_by_bot = False
         self._cancel_anim()
         self._hide_cancel_btn()
         self._cancel_flag = False
@@ -1013,22 +1040,29 @@ class FreeCellGUI:
 
         def worker():
             result = fn(_to_int_state(self.state))
+            
             def done():
                 self._hide_cancel_btn()
 
                 if self._cancel_flag:    
                     return
 
-                if result["solution"]:
+                # Sử dụng .get() an toàn hơn và kiểm tra is not None
+                if result and result.get("solution") is not None:
+                    self._solved_by_bot = True
+                    
                     sol = result["solution"]
-                    t   = round(result["time"], 3)
-                    exp = result["expanded_nodes"]
+                    t   = round(result.get("time", 0), 3)
+                    exp = result.get("expanded_nodes", 0)
+                    mem = result.get("memory_peak_traced_mb", "?")
+                    
                     self.status_var.set(
-                        f"{name}: {len(sol)} nước | {t}s | {exp} nodes")
+                        f"{name}: {len(sol)} nước | {t}s | {exp} nodes | Mem: {mem}MB")
+                    
                     self.move_log.set_solution(sol)
                     self.play_solution(sol, index=0)
                 else:
-                    self.status_var.set(f"{name}: Không tìm được lời giải")
+                    self.status_var.set(f"{name}: Không tìm được lời giải hoặc đã hủy")
                     self._solving = False
             self.root.after(0, done)
 
