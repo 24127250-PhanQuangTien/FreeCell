@@ -6,7 +6,7 @@ import os
 import tracemalloc
 
 from game import get_moves, apply_move, is_goal, is_red
-from utilities import encode_state, apply_safe_auto_moves, filter_dominated_moves, _is_safe_to_auto_move
+from utilities import state_key, filter_dominated_moves, EMPTY
 
 
 # ──────────────────────────────────────────────────────────
@@ -66,51 +66,36 @@ from utilities import encode_state, apply_safe_auto_moves, filter_dominated_move
 
 def heuristic(state) -> float:
     foundations = state["foundations"]
-    cascades = state["cascades"]
-    freecells = state["freecells"]
+    cascades    = state["cascades"]
+    freecells   = state["freecells"]
 
-    remaining = 52 - sum(foundations.values())
+    remaining = 52 - sum(foundations)
     if remaining == 0:
         return 0.0
 
-    # Tìm độ chôn của lá tiếp theo cần lên foundation cho mỗi suit
-    need_depth = 0.0
-    targets = {
-        (suit, foundations[suit] + 1): None
-        for suit in ("H", "D", "C", "S")
-        if foundations[suit] < 13
-    }
+    # Burial depth của lá tiếp theo cần lên foundation cho mỗi suit
+    targets: dict = {}
+    for suit in range(4):
+        need_rank = foundations[suit] + 1
+        if need_rank <= 13:
+            targets[suit * 13 + (need_rank - 1)] = 0
 
-    unresolved = set(targets.keys())
+    unresolved = set(targets)
     if unresolved:
         for col in cascades:
-            for depth, card in enumerate(reversed(col)):
-                if card in unresolved:
-                    targets[card] = depth
-                    unresolved.remove(card)
+            for depth, cid in enumerate(reversed(col)):
+                if cid in unresolved:
+                    targets[cid] = depth
+                    unresolved.discard(cid)
                     if not unresolved:
                         break
             if not unresolved:
                 break
 
-    for depth in targets.values():
-        if depth is not None:
-            need_depth += depth
+    need_depth  = sum(targets.values())
+    occupied_fc = sum(1 for c in freecells if c != EMPTY)
 
-    occupied_fc = sum(1 for c in freecells if c is not None)
-
-    bad_adj = 0
-    for col in cascades:
-        for lower, upper in zip(col, col[1:]):
-            if (is_red(lower[0]) == is_red(upper[0])) or (upper[1] != lower[1] - 1):
-                bad_adj += 1
-
-    return (
-        float(remaining)
-        + 1.25 * need_depth
-        + 0.75 * occupied_fc
-        + 0.35 * bad_adj
-    )
+    return float(remaining) + 1.5 * need_depth + 0.5 * occupied_fc
 
 # ──────────────────────────────────────────────────────────
 # Move cost  (REDESIGNED — nhất quán, không oscillation)
@@ -146,7 +131,7 @@ def move_cost(move, state_before, state_after) -> float:
 def _expand(state):
     """
     Sinh tất cả successor states.
-    Trả về list of (successor_state, primary_move, auto_moves, step_cost).
+    Trả về list of (successor_state, move, step_cost).
     """
     raw_moves = get_moves(state)
     moves     = filter_dominated_moves(raw_moves, state)
@@ -154,15 +139,11 @@ def _expand(state):
 
     for move in moves:
         s1 = apply_move(state, move)
-        s2, auto = apply_safe_auto_moves(s1)
-        cost = move_cost(move, state, s1) + len(auto) * 0.5
-        results.append((s2, move, auto, cost))
+        cost = move_cost(move, state, s1)
+        results.append((s1, move, cost))
 
     return results
 
-
-def _full_path(primary_move, auto_moves, path):
-    return path + [primary_move] + auto_moves
 
 
 # ──────────────────────────────────────────────────────────
@@ -205,36 +186,50 @@ def _finalize(algorithm_name, result):
 # ──────────────────────────────────────────────────────────
 # BFS optimized
 # ──────────────────────────────────────────────────────────
+#
+# Thay đổi so với phiên bản cũ:
+#   - Thêm max_nodes (mặc định 150_000) → tránh lag / OOM vô hạn
+#   - Dùng parent_map thay vì lưu path trong mỗi queue entry
+#     → tiết kiệm bộ nhớ đáng kể (O(nodes) thay vì O(nodes × depth))
 
-def bfs_optimized(initial_state):
+def bfs_optimized(initial_state, max_nodes: int = 999_999):
     tracemalloc.start()
     try:
-        start = time.time()
+        start    = time.time()
+        init_key = state_key(initial_state)
 
-        init_state, init_auto = apply_safe_auto_moves(initial_state)
-        init_key = encode_state(init_state)
-
-        queue    = deque([(init_state, init_auto)])
-        visited  = {init_key}
-        expanded = 0
+        queue      = deque([init_key])
+        visited    = {init_key}
+        parent_map = {init_key: (None, None)}   # key → (parent_key, move)
+        state_map  = {init_key: initial_state}  # key → state (để expand)
+        expanded   = 0
 
         while queue:
-            state, path = queue.popleft()
+            if expanded >= max_nodes:
+                break
+
+            cur_key = queue.popleft()
+            state   = state_map[cur_key]
 
             if is_goal(state):
+                solution = _reconstruct_path(parent_map, cur_key)
                 return _finalize("BFS", {
-                    "solution": path, "time": time.time() - start,
-                    "expanded_nodes": expanded, "length": len(path),
+                    "solution": solution, "time": time.time() - start,
+                    "expanded_nodes": expanded, "length": len(solution),
                 })
 
             expanded += 1
 
-            for succ, move, auto, _cost in _expand(state):
-                key = encode_state(succ)
+            for succ, move, _cost in _expand(state):
+                key = state_key(succ)
                 if key not in visited:
-                    expanded += len(auto)
                     visited.add(key)
-                    queue.append((succ, _full_path(move, auto, path)))
+                    parent_map[key] = (cur_key, move)
+                    state_map[key]  = succ
+                    queue.append(key)
+
+            # Giải phóng state đã expand xong (không cần nữa)
+            del state_map[cur_key]
 
         return _finalize("BFS", {
             "solution": None, "time": time.time() - start,
@@ -248,39 +243,49 @@ def bfs_optimized(initial_state):
 # ──────────────────────────────────────────────────────────
 # DFS optimized
 # ──────────────────────────────────────────────────────────
+#
+# Thay đổi so với phiên bản cũ:
+#   - Dùng parent_map thay vì lưu path trong stack
+#     → giảm bộ nhớ, tránh copy list path mỗi node
 
-def dfs_optimized(initial_state, max_depth=300):
+def dfs_optimized(initial_state, max_depth: int = 300):
     tracemalloc.start()
     try:
-        start = time.time()
+        start    = time.time()
+        init_key = state_key(initial_state)
 
-        init_state, init_auto = apply_safe_auto_moves(initial_state)
-        init_key = encode_state(init_state)
-
-        stack    = [(init_state, init_auto)]
-        visited  = {init_key}
-        expanded = 0
+        # Stack lưu (key, depth) thay vì (state, path)
+        stack      = [(init_key, 0)]
+        visited    = {init_key}
+        parent_map = {init_key: (None, None)}
+        state_map  = {init_key: initial_state}
+        expanded   = 0
 
         while stack:
-            state, path = stack.pop()
+            cur_key, depth = stack.pop()
+            state = state_map.get(cur_key)
+            if state is None:           # đã bị xóa (node cũ trong stack)
+                continue
 
             if is_goal(state):
+                solution = _reconstruct_path(parent_map, cur_key)
                 return _finalize("DFS", {
-                    "solution": path, "time": time.time() - start,
-                    "expanded_nodes": expanded, "length": len(path),
+                    "solution": solution, "time": time.time() - start,
+                    "expanded_nodes": expanded, "length": len(solution),
                 })
 
-            if len(path) > max_depth:
+            if depth >= max_depth:
                 continue
 
             expanded += 1
 
-            for succ, move, auto, _cost in reversed(_expand(state)):
-                key = encode_state(succ)
+            for succ, move, _cost in reversed(_expand(state)):
+                key = state_key(succ)
                 if key not in visited:
-                    expanded += len(auto)
                     visited.add(key)
-                    stack.append((succ, _full_path(move, auto, path)))
+                    parent_map[key] = (cur_key, move)
+                    state_map[key]  = succ
+                    stack.append((key, depth + 1))
 
         return _finalize("DFS", {
             "solution": None, "time": time.time() - start,
@@ -299,27 +304,25 @@ def _reconstruct_path(parent_map, goal_key):
     solution = []
     key = goal_key
     while parent_map[key][0] is not None:
-        parent_key, move, auto = parent_map[key]
-        solution = [move] + auto + solution
+        parent_key, move = parent_map[key]
+        solution.append(move)
         key = parent_key
-    _, _, init_auto = parent_map[key]
-    return init_auto + solution
+    solution.reverse()
+    return solution
 
 
-def ucs_optimized(initial_state, max_nodes=500_000):
+def ucs_optimized(initial_state, max_nodes=999_999):
     tracemalloc.start()
     try:
         start = time.time()
 
-        init_state, init_auto = apply_safe_auto_moves(initial_state)
-        init_key = encode_state(init_state)
-
+        init_key     = state_key(initial_state)
         counter      = 0
-        h0           = heuristic(init_state)
+        h0           = heuristic(initial_state)
         pq           = [(0, h0, counter, init_key)]
         g_score      = {init_key: 0}
-        parent_map   = {init_key: (None, None, init_auto)}
-        key_to_state = {init_key: init_state}
+        parent_map   = {init_key: (None, None)}
+        key_to_state = {init_key: initial_state}
         expanded     = 0
 
         while pq:
@@ -342,14 +345,13 @@ def ucs_optimized(initial_state, max_nodes=500_000):
 
             expanded += 1
 
-            for succ, move, auto, step_cost in _expand(state):
+            for succ, move, step_cost in _expand(state):
                 new_cost = cost + step_cost
-                key = encode_state(succ)
+                key = state_key(succ)
 
                 if new_cost < g_score.get(key, float("inf")):
-                    expanded += len(auto)
                     g_score[key]      = new_cost
-                    parent_map[key]   = (cur_key, move, auto)
+                    parent_map[key]   = (cur_key, move)
                     key_to_state[key] = succ
                     counter += 1
                     heapq.heappush(pq, (new_cost, heuristic(succ), counter, key))
@@ -367,86 +369,82 @@ def ucs_optimized(initial_state, max_nodes=500_000):
 # A* core
 # ──────────────────────────────────────────────────────────
 
-def _astar_core(initial_state, weight: float, label: str, max_nodes: int = 500_000):
-    tracemalloc.start()
-    try:
-        start = time.time()
+def _astar_core(initial_state, weight: float, max_nodes: int = 500_000):
+    """
+    Pure A* search — không quản lý tracemalloc, không ghi CSV.
+    Chỉ trả về raw result dict.
+    Được gọi bởi astar_optimized (quản lý memory + CSV bên ngoài).
+    """
+    start = time.time()
 
-        init_state, init_auto = apply_safe_auto_moves(initial_state)
-        init_key = encode_state(init_state)
+    init_key = state_key(initial_state)
+    counter  = 0
 
-        counter = 0
+    h_cache: dict = {}
 
-        h_cache: dict = {}
+    def get_h(key, state):
+        if key not in h_cache:
+            h_cache[key] = heuristic(state)
+        return h_cache[key]
 
-        def get_h(key, state):
-            if key not in h_cache:
-                h_cache[key] = heuristic(state)
-            return h_cache[key]
+    h0 = get_h(init_key, initial_state)
+    pq = [(weight * h0, counter, 0.0, init_key)]   # (f, tie, g, key)
 
-        h0 = get_h(init_key, init_state)
-        pq = [(weight * h0, counter, 0.0, init_key)]  # (f, tie, g, key)
+    g_score      = {init_key: 0.0}
+    parent_map   = {init_key: (None, None)}
+    key_to_state = {init_key: initial_state}
 
-        g_score    = {init_key: 0.0}
-        parent_map = {init_key: (None, None, init_auto)}
-        key_to_state = {init_key: init_state}
+    closed   = set()
+    expanded = 0
 
-        closed   = set()
-        expanded = 0
+    while pq:
+        f, _, g, cur_key = heapq.heappop(pq)
 
-        while pq:
-            f, _, g, cur_key = heapq.heappop(pq)
+        if cur_key in closed:
+            continue
+        closed.add(cur_key)
 
-            if cur_key in closed:
+        state = key_to_state[cur_key]
+
+        if is_goal(state):
+            solution = _reconstruct_path(parent_map, cur_key)
+            return {
+                "solution":       solution,
+                "time":           time.time() - start,
+                "expanded_nodes": expanded,
+                "length":         len(solution),
+            }
+
+        if expanded >= max_nodes:
+            break
+
+        expanded += 1
+
+        for succ, move, step_cost in _expand(state):
+            key = state_key(succ)
+
+            if key in closed:
                 continue
-            closed.add(cur_key)
 
-            state = key_to_state[cur_key]
+            new_g = g + step_cost
 
-            if is_goal(state):
-                solution = _reconstruct_path(parent_map, cur_key)
-                return _finalize(label, {
-                    "solution":      solution,
-                    "time":          time.time() - start,
-                    "expanded_nodes": expanded,
-                    "length":        len(solution),
-                })
+            if new_g < g_score.get(key, float("inf")):
+                g_score[key]      = new_g
+                parent_map[key]   = (cur_key, move)
+                key_to_state[key] = succ
 
-            if expanded >= max_nodes:
-                break
+                new_f = new_g + weight * get_h(key, succ)
+                counter += 1
+                heapq.heappush(pq, (new_f, counter, new_g, key))
 
-            expanded += 1
+        del key_to_state[cur_key]
 
-            for succ, move, auto, step_cost in _expand(state):
-                key = encode_state(succ)
-
-                if key in closed:
-                    continue
-
-                new_g = g + step_cost
-
-                if new_g < g_score.get(key, float("inf")):
-                    expanded += len(auto)
-                    g_score[key]      = new_g
-                    parent_map[key]   = (cur_key, move, auto)
-                    key_to_state[key] = succ
-
-                    new_f = new_g + weight * get_h(key, succ)
-                    counter += 1
-                    heapq.heappush(pq, (new_f, counter, new_g, key))
-
-            del key_to_state[cur_key]
-
-        return _finalize(label, {
-            "solution":      None,
-            "time":          time.time() - start,
-            "expanded_nodes": expanded,
-            "length":        0,
-        })
-
-    finally:
-        if tracemalloc.is_tracing():
-            tracemalloc.stop()
+    return {
+        "solution":       None,
+        "time":           time.time() - start,
+        "expanded_nodes": expanded,
+        "length":         0,
+    }
 
 
 # ──────────────────────────────────────────────────────────
@@ -469,24 +467,41 @@ def astar_optimized(initial_state):
     """
     Anytime Weighted A*:
     Thử lần lượt weight=[3.0, 5.0, 8.0]. Trả về solution đầu tiên tìm được.
+
+    Sửa lỗi so với phiên bản cũ:
+    - tracemalloc được quản lý TẠI ĐÂY, không trong _astar_core
+      → tránh bị stop sớm sau lần gọi đầu tiên
+    - _finalize (ghi CSV) chỉ gọi 1 lần duy nhất với expanded_nodes TỔNG CỘNG
+      → stats CSV chính xác
+    - finally block đảm bảo tracemalloc.stop() dù có exception
     """
     tracemalloc.start()
     t0             = time.time()
     total_expanded = 0
 
-    for w in _ASTAR_WEIGHTS:
-        result = _astar_core(initial_state, weight=w,
-                             label="A*", max_nodes=_ASTAR_MAX_NODES)
-        total_expanded += result["expanded_nodes"]
+    try:
+        for w in _ASTAR_WEIGHTS:
+            result = _astar_core(initial_state, weight=w, max_nodes=_ASTAR_MAX_NODES)
+            total_expanded += result["expanded_nodes"]
 
-        if result["solution"] is not None:
-            result["expanded_nodes"] = total_expanded
-            result["time"]           = round(time.time() - t0, 4)
-            return result
+            if result["solution"] is not None:
+                return _finalize("A*", {
+                    "solution":       result["solution"],
+                    "time":           round(time.time() - t0, 4),
+                    "expanded_nodes": total_expanded,
+                    "length":         result["length"],
+                })
 
-    return {
-        "solution":       None,
-        "time":           round(time.time() - t0, 4),
-        "expanded_nodes": total_expanded,
-        "length":         0,
-    }
+        # Không tìm được với bất kỳ weight nào
+        return _finalize("A*", {
+            "solution":       None,
+            "time":           round(time.time() - t0, 4),
+            "expanded_nodes": total_expanded,
+            "length":         0,
+        })
+
+    finally:
+        # Safety net: _finalize đã stop tracemalloc rồi,
+        # nhưng nếu có exception trước đó thì cần stop tại đây.
+        if tracemalloc.is_tracing():
+            tracemalloc.stop()
