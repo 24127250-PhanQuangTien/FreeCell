@@ -3,46 +3,98 @@ from tkinter import ttk
 import threading
 import os
 import random
+import copy
+import csv
 from PIL import Image, ImageTk
 
-from game import create_initial_state, create_instruction_state, apply_move
-from solver import bfs, dfs, ucs, astar
 from optimized import bfs_optimized, dfs_optimized, ucs_optimized, astar_optimized
+import game as _game_module
+from utilities import SUITS, SUIT_IDX, EMPTY, apply_safe_auto_moves
+
+# ─────────────────────────────────────────
+# Compatibility layer
+# GUI dùng state format cũ (dict + list + None) vì drag-drop mutate trực tiếp.
+# Các hàm bên dưới bridge GUI ↔ int-based game.py / solver.
+# ─────────────────────────────────────────
+_SUIT_ORDER = ["H", "D", "C", "S"]   # khớp index 0-3 trong foundations tuple
+
+def _to_int_state(gui_state: dict) -> dict:
+    """GUI state → int-based state (cho solver / apply_move nội bộ)."""
+    foundations = tuple(gui_state["foundations"][s] for s in _SUIT_ORDER)
+    freecells   = tuple(
+        SUIT_IDX[c[0]] * 13 + (c[1] - 1) if c is not None else EMPTY
+        for c in gui_state["freecells"]
+    )
+    cascades = tuple(
+        tuple(SUIT_IDX[s] * 13 + (r - 1) for s, r in col)
+        for col in gui_state["cascades"]
+    )
+    return {"foundations": foundations, "freecells": freecells, "cascades": cascades}
+
+
+def _to_gui_state(int_state: dict) -> dict:
+    """Int-based state → GUI state (sau apply_move)."""
+    foundations = {s: int_state["foundations"][i] for i, s in enumerate(_SUIT_ORDER)}
+    freecells   = [
+        (SUITS[c // 13], c % 13 + 1) if c != EMPTY else None
+        for c in int_state["freecells"]
+    ]
+    cascades = [
+        [(SUITS[c // 13], c % 13 + 1) for c in col]
+        for col in int_state["cascades"]
+    ]
+    return {"foundations": foundations, "freecells": freecells, "cascades": cascades}
+
+
+def apply_move(gui_state: dict, move) -> dict:
+    """Wrapper: nhận GUI state, trả GUI state. Bridge qua game.apply_move."""
+    return _to_gui_state(_game_module.apply_move(_to_int_state(gui_state), move))
+
+
+def create_initial_state(gamenumber: int) -> dict:
+    return _to_gui_state(_game_module.create_initial_state(gamenumber))
+
+
+def create_instruction_state() -> dict:
+    return _to_gui_state(_game_module.create_instruction_state())
 
 # ─────────────────────────────────────────
 # Layout constants
 # ─────────────────────────────────────────
-CARD_W    = 90
-CARD_H    = 120
-COL_GAP   = 118
-START_X   = 100
-START_Y   = 170
-TOP_Y     = 14
+CARD_W    = 96
+CARD_H    = 144
+COL_GAP   = 142
+START_X   = 95
+START_Y   = 260
+TOP_Y     = 80
 CASCADE_Y_STEP = 32
 
-WIN_W     = 1050
-WIN_H     = 820
+WIN_W     = 1280
+WIN_H     = 720
 
 # Bottom bar height
 BAR_H     = 56
-MOVE_LOG_H = 80   # height of move-log strip above buttons
+# MOVE_LOG_H = 80   # height of move-log strip above buttons
 
-# Colors (dark felt theme)
-BG          = "#1a3a2a"
-FELT        = "#0f2d1e"
-BTN_BG      = "#1e4030"
-BTN_ACTIVE  = "#2a6046"
-BTN_TEXT    = "#c8e6c9"
-BTN_BORDER  = "#3a7a5a"
-ACCENT      = "#66bb6a"
-ACCENT2     = "#ffca28"
-LOG_BG      = "#0d2418"
-LOG_BORDER  = "#2a5a3a"
-TEXT_DIM    = "#4a8a5a"
-TEXT_MID    = "#90cba0"
-TEXT_BRIGHT = "#e8f5e9"
+# Colors (Regal Blue & Gold Theme)
+BG          = "#0a1128"
+FELT        = "#102a43"
+BTN_BG      = "#1e3a8a"
+BTN_ACTIVE  = "#2563eb"
+BTN_BORDER  = "#3b82f6"
 
-SUIT_COLOR  = {"H": "#ef5350", "D": "#ef5350", "C": "#263238", "S": "#263238"}
+LOG_BG      = "#0f172a"
+LOG_BORDER  = "#1e40af"
+
+ACCENT      = "#fcd34d"
+ACCENT2     = "#f59e0b"
+
+BTN_TEXT    = "#fef08a" 
+TEXT_DIM    = "#bca878"
+TEXT_MID    = "#eab308"
+TEXT_BRIGHT = "#fffbeb"
+
+SUIT_COLOR  = {"H": "#ef5350", "D": "#e9413e", "C": "#000000", "S": "#000000"}
 
 
 def move_to_label(move):
@@ -50,16 +102,17 @@ def move_to_label(move):
     if not move:
         return ""
     t = move[0]
+
     if t == "cascade_to_foundation":
-        return f"Cột {move[1]+1} → Foundation"
+        return f"Cột {move[1]+1} ➔ Đích"
     if t == "freecell_to_foundation":
-        return f"FreecellCol {move[1]+1} → Foundation"
+        return f"Free {move[1]+1} ➔ Đích"
     if t == "cascade_to_freecell":
-        return f"Cột {move[1]+1} → Freecell {move[2]+1}"
+        return f"Cột {move[1]+1} ➔ Free {move[2]+1}"
     if t == "freecell_to_cascade":
-        return f"Freecell {move[1]+1} → Cột {move[2]+1}"
+        return f"Free {move[1]+1} ➔ Cột {move[2]+1}"
     if t == "cascade_to_cascade":
-        return f"Cột {move[1]+1} → Cột {move[2]+1}"
+        return f"Cột {move[1]+1} ➔ Cột {move[2]+1}"
     return str(move)
 
 
@@ -71,43 +124,44 @@ class SeedDialog(tk.Toplevel):
         super().__init__(parent)
         self.result = None
         self.title("New Game")
-        self.configure(bg=BG)
+        self.configure(bg=FELT)
         self.resizable(False, False)
         self.grab_set()
         self._cancel_flag = False
 
-        # Center on parent
-        self.geometry(f"340x220+{parent.winfo_rootx()+350}+{parent.winfo_rooty()+250}")
+        self.geometry(f"360x220+{parent.winfo_rootx()+460}+{parent.winfo_rooty()+250}")
 
         # Title
-        tk.Label(self, text="🂠  NEW GAME", font=("Courier New", 15, "bold"),
-                 fg=ACCENT, bg=BG).pack(pady=(22, 4))
+        tk.Label(self, text="🂠  NEW GAME", font=("Georgia", 16, "bold"),
+                 fg=ACCENT, bg=FELT).pack(pady=(20, 6))
+                 
         tk.Label(self, text="Nhập seed để tái tạo ván bài,\nhoặc để trống để deal ngẫu nhiên.",
-                 font=("Courier New", 9), fg=TEXT_MID, bg=BG, justify="center").pack()
+                 font=("Consolas", 10), fg=TEXT_BRIGHT, bg=FELT, justify="center").pack()
 
         # Seed entry
-        frame = tk.Frame(self, bg=BG)
-        frame.pack(pady=14)
-        tk.Label(frame, text="Seed:", font=("Courier New", 10, "bold"),
-                 fg=BTN_TEXT, bg=BG).pack(side=tk.LEFT, padx=6)
-        self.entry = tk.Entry(frame, width=16, font=("Courier New", 12),
-                              bg=LOG_BG, fg=ACCENT, insertbackground=ACCENT,
-                              relief="flat", bd=4)
+        frame = tk.Frame(self, bg=FELT)
+        frame.pack(pady=16)
+        tk.Label(frame, text="Seed:", font=("Consolas", 11, "bold"),
+                 fg=BTN_TEXT, bg=FELT).pack(side=tk.LEFT, padx=6)
+                 
+        self.entry = tk.Entry(frame, width=16, font=("Consolas", 12, "bold"),
+                              bg=LOG_BG, fg=ACCENT2, insertbackground=ACCENT2,
+                              relief="solid", bd=1, highlightthickness=1, highlightbackground=BTN_BORDER)
         self.entry.pack(side=tk.LEFT)
 
         # Buttons
-        btn_frame = tk.Frame(self, bg=BG)
+        btn_frame = tk.Frame(self, bg=FELT)
         btn_frame.pack(pady=6)
 
         def make_btn(parent, text, cmd, accent=False):
             c = ACCENT if accent else BTN_BG
             tc = BG if accent else BTN_TEXT
             b = tk.Button(parent, text=text, command=cmd,
-                          font=("Courier New", 9, "bold"),
+                          font=("Consolas", 10, "bold"),
                           bg=c, fg=tc, activebackground=BTN_ACTIVE,
                           activeforeground=TEXT_BRIGHT, relief="flat",
-                          bd=0, padx=14, pady=7, cursor="hand2")
-            b.pack(side=tk.LEFT, padx=6)
+                          bd=0, padx=16, pady=6, cursor="hand2")
+            b.pack(side=tk.LEFT, padx=8)
             return b
 
         make_btn(btn_frame, "Random", self._random)
@@ -131,39 +185,38 @@ class SeedDialog(tk.Toplevel):
 # ─────────────────────────────────────────
 class MoveLogStrip(tk.Frame):
     """
-    Hiển thị 3 nước đi: [trước] [HIỆN TẠI] [sắp tới]
-    với hiệu ứng mờ dần ra hai bên.
+    Hiển thị 3 nước đi: [trước] ➔ [HIỆN TẠI] ➔ [sắp tới]
     """
     def __init__(self, parent, **kw):
-        super().__init__(parent, bg=LOG_BG, height=MOVE_LOG_H,
+        # Tăng chiều rộng lên một chút để có thêm không gian thở
+        super().__init__(parent, bg=LOG_BG, width=540, height=36,
                          highlightthickness=1, highlightbackground=LOG_BORDER, **kw)
         self.pack_propagate(False)
 
-        # Index label (e.g. "Bước 3 / 52")
+        # Tạo một frame con nằm ngay chính giữa để chứa text
+        self.content = tk.Frame(self, bg=LOG_BG)
+        self.content.place(relx=0.5, rely=0.5, anchor="center")
+
+        # Index label (Bước)
         self.idx_var = tk.StringVar(value="")
-        tk.Label(self, textvariable=self.idx_var,
-                 font=("Courier New", 8), fg=TEXT_DIM, bg=LOG_BG).place(x=8, y=4)
+        tk.Label(self.content, textvariable=self.idx_var,
+                 font=("Consolas", 8), fg=TEXT_DIM, bg=LOG_BG).pack(side=tk.LEFT, padx=(0, 15))
 
-        # 3 move labels
-        self._labels = []
-        configs = [
-            # (relx, font_size, fg, bold)
-            (0.18, 8,  TEXT_DIM,    False),
-            (0.50, 11, TEXT_BRIGHT, True),
-            (0.82, 8,  TEXT_DIM,    False),
-        ]
-        for relx, fs, fg, bold in configs:
-            style = "bold" if bold else "normal"
-            lbl = tk.Label(self, text="", font=("Courier New", fs, style),
-                           fg=fg, bg=LOG_BG, anchor="center")
-            lbl.place(relx=relx, rely=0.5, anchor="center")
-            self._labels.append(lbl)
+        # Các label hiển thị nước đi
+        self.lbl_prev = tk.Label(self.content, text="", font=("Consolas", 8), fg=TEXT_DIM, bg=LOG_BG)
+        self.lbl_prev.pack(side=tk.LEFT)
 
-        # Arrow indicators
-        tk.Label(self, text="◀", font=("Courier New", 9), fg=TEXT_DIM, bg=LOG_BG
-                 ).place(relx=0.33, rely=0.5, anchor="center")
-        tk.Label(self, text="▶", font=("Courier New", 9), fg=TEXT_DIM, bg=LOG_BG
-                 ).place(relx=0.67, rely=0.5, anchor="center")
+        self.arrow1 = tk.Label(self.content, text="", font=("Consolas", 8), fg=TEXT_DIM, bg=LOG_BG)
+        self.arrow1.pack(side=tk.LEFT)
+
+        self.lbl_curr = tk.Label(self.content, text="", font=("Consolas", 10, "bold"), fg=TEXT_BRIGHT, bg=LOG_BG)
+        self.lbl_curr.pack(side=tk.LEFT)
+
+        self.arrow2 = tk.Label(self.content, text="", font=("Consolas", 8), fg=TEXT_DIM, bg=LOG_BG)
+        self.arrow2.pack(side=tk.LEFT)
+
+        self.lbl_next = tk.Label(self.content, text="", font=("Consolas", 8), fg=TEXT_DIM, bg=LOG_BG)
+        self.lbl_next.pack(side=tk.LEFT)
 
         self._solution = []
         self._cur_idx = -1
@@ -174,7 +227,6 @@ class MoveLogStrip(tk.Frame):
         self._update_display()
 
     def set_index(self, idx):
-        """Call this at each animation step."""
         self._cur_idx = idx
         self._update_display()
 
@@ -187,24 +239,32 @@ class MoveLogStrip(tk.Frame):
         curr_move = sol[i]     if (0 <= i < n) else None
         next_move = sol[i + 1] if (i + 1 < n) else None
 
-        texts = [
-            move_to_label(prev_move) or "—",
-            move_to_label(curr_move) or "—",
-            move_to_label(next_move) or "—",
-        ]
-        for lbl, txt in zip(self._labels, texts):
-            lbl.config(text=txt)
+        # Render text
+        t_prev = move_to_label(prev_move)
+        t_curr = move_to_label(curr_move)
+        t_next = move_to_label(next_move)
+
+        self.lbl_prev.config(text=t_prev)
+        self.lbl_curr.config(text=t_curr)
+        self.lbl_next.config(text=t_next)
+
+        # Tự động hiển thị/ẩn mũi tên dựa trên việc có text đi kèm hay không
+        self.arrow1.config(text=" < " if t_prev else "")
+        self.arrow2.config(text=" > " if t_next else "")
 
         if curr_move is not None and n > 0:
-            self.idx_var.set(f"Bước {i + 1} / {n}")
+            self.idx_var.set(f"B.{i + 1}/{n}")
         else:
             self.idx_var.set("")
 
     def clear(self):
         self._solution = []
         self._cur_idx  = -1
-        for lbl in self._labels:
-            lbl.config(text="")
+        self.lbl_prev.config(text="")
+        self.lbl_curr.config(text="")
+        self.lbl_next.config(text="")
+        self.arrow1.config(text="")
+        self.arrow2.config(text="")
         self.idx_var.set("")
 
 
@@ -219,7 +279,9 @@ class FreeCellGUI:
         self.root.configure(bg=BG)
         self.root.resizable(False, False)
 
-        self.state     = create_initial_state(random.randint(1, 9999))
+        self.current_seed = random.randint(1, 64000)
+        self.is_instruction = False
+        self.state     = create_initial_state(self.current_seed)
         self.card_images = {}
         self.guide_image = None
         self._load_images()
@@ -227,6 +289,7 @@ class FreeCellGUI:
         self._solving   = False   # lock during solve
         self._anim_job  = None    # after() id for cancel
         self._solution  = []
+        self._cancel_flag = False
 
         self._build_ui()
         self.render()
@@ -239,37 +302,47 @@ class FreeCellGUI:
     def _load_images(self):
         suits  = ["C", "D", "H", "S"]
         values = range(1, 14)
+
+        crop_x = 13
+        crop_y = 16
+
         for suit in suits:
             for val in values:
                 path = f"asset/{suit}{val}.png"
                 if os.path.exists(path):
-                    img = Image.open(path).resize((CARD_W, CARD_H), Image.LANCZOS)
+                    img = Image.open(path)
+                    w, h = img.size
+                    img = img.crop((crop_x, crop_y, w - crop_x, h - crop_y))
+                    img = img.resize((CARD_W, CARD_H), Image.NEAREST)
                     self.card_images[f"{suit}{val}"] = ImageTk.PhotoImage(img)
 
         path_ins = "asset/guide.png"
         if os.path.exists(path_ins):
-            img = Image.open(path_ins).resize((WIN_W, WIN_H - BAR_H - MOVE_LOG_H), Image.LANCZOS)
+            img = Image.open(path_ins).resize((WIN_W, WIN_H - BAR_H), Image.LANCZOS)
             self.guide_image = ImageTk.PhotoImage(img)
+        
+        path_bg = "asset/background.png"
+        if os.path.exists(path_bg):
+            img_bg = Image.open(path_bg).resize((WIN_W, WIN_H - BAR_H), Image.LANCZOS)
+            self.bg_image = ImageTk.PhotoImage(img_bg)
+        else:
+            self.bg_image = None
 
     # ─────────────────────────────────────
     # Build UI layout
     # ─────────────────────────────────────
     def _build_ui(self):
-        # ── Main canvas (game board)
-        canvas_h = WIN_H - BAR_H - MOVE_LOG_H - 2
-        self.canvas = tk.Canvas(self.root, width=WIN_W, height=canvas_h,
-                                bg=FELT, highlightthickness=0)
-        self.canvas.pack(side=tk.TOP, fill=tk.X)
-
-        # ── Move log strip
-        self.move_log = MoveLogStrip(self.root)
-        self.move_log.pack(side=tk.TOP, fill=tk.X)
-
         # ── Bottom button bar
         self.bar = tk.Frame(self.root, bg=BTN_BG, height=BAR_H,
                             highlightthickness=1, highlightbackground=BTN_BORDER)
         self.bar.pack(side=tk.BOTTOM, fill=tk.X)
         self.bar.pack_propagate(False)
+
+        # ── Main canvas (game board)
+        canvas_h = WIN_H - BAR_H - 2
+        self.canvas = tk.Canvas(self.root, width=WIN_W, height=canvas_h,
+                                bg=FELT, highlightthickness=0)
+        self.canvas.pack(side=tk.TOP, fill=tk.X)
 
         self._build_buttons()
 
@@ -283,39 +356,45 @@ class FreeCellGUI:
         # Status label (left side)
         self.status_var = tk.StringVar(value="Sẵn sàng")
         tk.Label(self.bar, textvariable=self.status_var,
-                 font=("Courier New", 9), fg=TEXT_DIM, bg=BTN_BG,
-                 width=22, anchor="w").pack(side=tk.LEFT, padx=(12, 0))
+                 font=("Consolas", 9), fg=TEXT_DIM, bg=BTN_BG,
+                 width=22, anchor="w").pack(side=tk.LEFT, padx=(12, 5))
+
+        self.move_log = MoveLogStrip(self.bar)
+        self.move_log.pack(side=tk.LEFT, padx=5, pady=10)
+
+        self._cancel_btn = tk.Button(
+            self.bar, text="✖ Cancel", command=self._cancel_solver,
+            font=("Consolas", 9, "bold"),
+            bg="#b71c1c", fg="#ffcdd2",
+            activebackground="#d32f2f", activeforeground="white",
+            relief="flat", bd=0, padx=12, pady=0, cursor="hand2", height=2,
+        )
 
         # Right-side buttons
         btn_specs = [
-            ("✦ Instruction", self.instruction_game,   "#5c35a0","#e8d8ff"),
-            ("⟳  New Game", self.new_game, ACCENT2, "#1a1a00"),
+            ("⟳ New Game", self.new_game, ACCENT2, "#1a1a00"),
+            ("↺ Restart",   self.restart_game, "#ff8f00", "#1a1a00"),
             ("BFS",          self.solve_bfs,  BTN_BG,  BTN_TEXT),
             ("DFS",          self.solve_dfs,  BTN_BG,  BTN_TEXT),
             ("UCS",          self.solve_ucs,  BTN_BG,  BTN_TEXT),
             ("A★",           self.solve_astar, ACCENT,  BG),
         ]
+        
+        # Duyệt và vẽ các nút tĩnh
         for text, cmd, bg, fg in btn_specs:
             b = tk.Button(
                 self.bar, text=text, command=cmd,
-                font=("Courier New", 9, "bold"),
+                font=("Consolas", 9, "bold"),
                 bg=bg, fg=fg,
                 activebackground=BTN_ACTIVE, activeforeground=TEXT_BRIGHT,
-                relief="flat", bd=0, padx=16, pady=0,
+                relief="flat", bd=0, padx=12, pady=0,
                 cursor="hand2", height=2,
             )
-            b.pack(side=tk.RIGHT, padx=4, pady=8)
+            # Sắp xếp các nút từ phải qua trái
+            b.pack(side=tk.RIGHT, padx=3, pady=8)
             # Hover effect
             b.bind("<Enter>", lambda e, btn=b: btn.config(bg=BTN_ACTIVE))
             b.bind("<Leave>", lambda e, btn=b, c=bg: btn.config(bg=c))
-
-        self._cancel_btn = tk.Button(
-            self.bar, text="✖ Cancel", command=self._cancel_solver,
-            font=("Courier New", 9, "bold"),
-            bg="#b71c1c", fg="#ffcdd2",
-            activebackground="#d32f2f", activeforeground="white",
-            relief="flat", bd=0, padx=12, pady=0, cursor="hand2", height=2,
-        )
 
     def _show_cancel_btn(self):
         self._cancel_btn.pack(side=tk.RIGHT, padx=3, pady=8)
@@ -332,19 +411,51 @@ class FreeCellGUI:
 
     def _show_victory(self):
         cx = WIN_W // 2
-        cy = (WIN_H - BAR_H - MOVE_LOG_H) // 2
+        cy = (WIN_H - BAR_H) // 2
+
+        stats_text = "Bạn đã xuất sắc giải xong màn chơi!"
+        
+        if getattr(self, '_solved_by_bot', False):
+            try:
+                csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "solver_runs.csv")
+                with open(csv_path, "r", encoding="utf-8") as f:
+                    lines = list(csv.DictReader(f))
+                    if lines:
+                        last_run = lines[-1]
+                        algo = last_run.get("algorithm", "A★")
+                        time_sec = last_run.get("time_sec", "0")
+                        nodes = last_run.get("expanded_nodes", "0")
+                        mem = last_run.get("memory_peak_traced_mb", "0")
+                        moves = last_run.get("solution_length", "0")
+                        
+                        stats_text = (f"Thuật toán: {algo} | Nước đi: {moves}\n"
+                                      f"Thời gian: {time_sec}s | Nodes: {nodes}\n"
+                                      f"Bộ nhớ tiêu thụ: {mem} MB")
+            except Exception:
+                stats_text = "Bot đã giải xong ván bài! (Không thể đọc file CSV)"
+
         self.canvas.create_rectangle(
-            cx-280, cy-90, cx+280, cy+90,
+            cx-320, cy-110, cx+320, cy+110,
             fill="#1a1200", outline=ACCENT2, width=4, tags="victory")
-        self.canvas.create_text(cx+3, cy-22+3, text="🏆  VICTORY  🏆",
-            font=("Courier New", 36, "bold"), fill="#5a4000", tags="victory")
-        self.canvas.create_text(cx, cy-22, text="🏆  VICTORY  🏆",
-            font=("Courier New", 36, "bold"), fill=ACCENT2, tags="victory")
-        self.canvas.create_text(cx, cy+32, text="Bạn đã giải xong ván bài!",
-            font=("Courier New", 14), fill="#ffe082", tags="victory")
-        self.canvas.create_text(cx, cy+62, text="[ Click để tiếp tục ]",
-            font=("Courier New", 10), fill=TEXT_DIM, tags="victory")
+        
+        self.canvas.create_text(cx+3, cy-45+3, text="🏆  VICTORY  🏆",
+            font=("Georgia", 38, "bold"), fill="#5a4000", tags="victory")
+        self.canvas.create_text(cx, cy-45, text="🏆  VICTORY  🏆",
+            font=("Georgia", 38, "bold"), fill=ACCENT2, tags="victory")
+        self.canvas.create_text(cx, cy+25, text=stats_text,
+            font=("Consolas", 14), fill="#ffe082", justify=tk.CENTER, tags="victory")
+        self.canvas.create_text(cx, cy+85, text="[ Click để tiếp tục ]",
+            font=("Georgia", 10), fill=TEXT_DIM, tags="victory")
         self.canvas.tag_bind("victory", "<Button-1>", lambda e: self.canvas.delete("victory"))
+
+    def _get_y_step(self, col_length):
+        """Tính Y Max để cards không bị tràn viền dưới"""
+        if col_length <= 1:
+            return CASCADE_Y_STEP
+
+        max_allowed_height = (WIN_H - BAR_H) - START_Y - CARD_H - 15
+        dynamic_step = max_allowed_height // (col_length - 1)  
+        return min(CASCADE_Y_STEP, dynamic_step)
 
     # ─────────────────────────────────────
     # Rendering
@@ -353,20 +464,23 @@ class FreeCellGUI:
         c = self.canvas
         c.delete("all")
 
+        if hasattr(self, 'bg_image') and self.bg_image:
+            c.create_image(0, 0, anchor=tk.NW, image=self.bg_image, tags="bg")
+
         # ── Grid background lines
         for i in range(8):
             x = START_X + i * COL_GAP + CARD_W // 2
             c.create_line(x, TOP_Y + CARD_H + 10, x, 620,
-                          fill="#0d2418", width=1, dash=(4, 8))
+                        fill="#1e3a8a", width=1, dash=(4, 8))
 
         # ── FreeCells (left 4)
         for i in range(4):
             x, y = START_X + i * COL_GAP, TOP_Y
             c.create_rectangle(x, y, x + CARD_W, y + CARD_H,
-                                outline=LOG_BORDER, fill=LOG_BG, width=1)
+                                outline=LOG_BORDER, fill="#1e3a8a", width=1)
             c.create_text(x + CARD_W // 2, y + CARD_H // 2,
-                          text="FREE", fill=TEXT_DIM,
-                          font=("Courier New", 8))
+                          text="FREE", fill=TEXT_MID,
+                          font=("Times New Roman", 8))
             card = self.state["freecells"][i]
             if card:
                 self._draw_card(x, y, card[0], card[1], "freecell", i)
@@ -378,11 +492,11 @@ class FreeCellGUI:
             x = START_X + (i + 4) * COL_GAP
             y = TOP_Y
             c.create_rectangle(x, y, x + CARD_W, y + CARD_H,
-                                outline=BTN_BORDER, fill=LOG_BG, width=1)
+                                outline=BTN_BORDER, fill="#1e3a8a", width=1)
             c.create_text(x + CARD_W // 2, y + CARD_H // 2,
                           text=suit_sym[suit],
                           fill=SUIT_COLOR[suit],
-                          font=("Courier New", 22))
+                          font=("Arial", 22))
             val = self.state["foundations"][suit]
             if val > 0:
                 self._draw_card(x, y, suit, val, "foundation", i)
@@ -390,8 +504,9 @@ class FreeCellGUI:
         # ── Cascades
         for i, col in enumerate(self.state["cascades"]):
             x = START_X + i * COL_GAP
+            step = self._get_y_step(len(col))
             for j, (suit, value) in enumerate(col):
-                y = START_Y + j * CASCADE_Y_STEP
+                y = START_Y + j * step
                 self._draw_card(x, y, suit, value, i, j)
 
     def _draw_card(self, x, y, suit, value, col, row):
@@ -418,7 +533,7 @@ class FreeCellGUI:
             self.canvas.create_text(
                 x + CARD_W // 2, y + CARD_H // 2,
                 text=txt, fill=color,
-                font=("Courier New", 11, "bold"), tags=(tag, "text"))
+                font=("Consolas", 11, "bold"), tags=(tag, "text"))
 
     def show_guide_overlay(self):
         if self.guide_image:
@@ -428,7 +543,7 @@ class FreeCellGUI:
             # Thêm nút "X" hoặc dòng chữ hướng dẫn tắt ở góc màn hình
             self.canvas.create_rectangle(WIN_W-90, 10, WIN_W-70, 30, fill="#b71c1c", outline="white", tags="guide_overlay")
             self.canvas.create_text(WIN_W-80, 20, text="X", fill="white", 
-                                    font=("Courier New", 10, "bold"), tags="guide_overlay")
+                                    font=("Consolas", 10, "bold"), tags="guide_overlay")
 
             # Click vào bất kỳ đâu trên ảnh hoặc nút để tắt
             self.canvas.tag_bind("guide_overlay", "<Button-1>", lambda e: self.hide_guide_overlay())
@@ -448,10 +563,6 @@ class FreeCellGUI:
     # Smooth solution playback
     # ─────────────────────────────────────
     def play_solution(self, solution, index=0, delay_ms=380):
-        """
-        Animate solution step-by-step.
-        Uses a sliding highlight on the card being moved.
-        """
         if index >= len(solution):
             self.status_var.set(f"✓ Giải xong! {len(solution)} nước")
             self._solving = False
@@ -459,28 +570,28 @@ class FreeCellGUI:
             self._show_victory()
             return
 
-        # Update move log strip
         self.move_log.set_index(index)
-
         move = solution[index]
+
+        prev_state = copy.deepcopy(self.state)
         self.state = apply_move(self.state, move)
 
         # Flash highlight on moved card (simulate drag feel)
-        self._flash_move(move, callback=lambda: (
+        self._flash_move(move, prev_state, callback=lambda: (
             self.render(),
             setattr(self, '_anim_job',
                 self.root.after(delay_ms,
                     lambda: self.play_solution(solution, index + 1, delay_ms)))
         ))
 
-    def _flash_move(self, move, callback):
+    def _flash_move(self, move, state_before, callback):
         """
         Brief highlight effect: 
         Draw a glowing rectangle on the destination then call callback.
         """
         self.render()
         # Determine destination coords
-        dest_x, dest_y = self._move_dest_coords(move)
+        dest_x, dest_y = self._move_dest_coords(move, state_before)
         if dest_x is not None:
             flash_id = self.canvas.create_rectangle(
                 dest_x - 3, dest_y - 3,
@@ -493,50 +604,67 @@ class FreeCellGUI:
             callback()
 
     def _fade_flash(self, item_id, steps, callback, step=0):
+        if getattr(self, '_cancel_flag', False):
+            try:
+                self.canvas.delete(item_id)
+            except tk.TclError:
+                pass
+            return
+
         if step >= steps:
             try:
                 self.canvas.delete(item_id)
-            except Exception:
+            except tk.TclError:
                 pass
             callback()
             return
-        # Reduce opacity by changing outline color toward bg
+
         alpha = 1 - step / steps
-        # Blend ACCENT2 (#ffca28) → LOG_BG (#0d2418)
         r = int(0xff * alpha + 0x0d * (1 - alpha))
         g = int(0xca * alpha + 0x24 * (1 - alpha))
         b = int(0x28 * alpha + 0x18 * (1 - alpha))
         color = f"#{r:02x}{g:02x}{b:02x}"
         try:
             self.canvas.itemconfig(item_id, outline=color)
-        except Exception:
+        except tk.TclError:
             pass
-        self.root.after(50, lambda: self._fade_flash(item_id, steps, callback, step + 1))
+        
+        self._anim_job = self.root.after(50, lambda: self._fade_flash(item_id, steps, callback, step + 1))
 
-    def _move_dest_coords(self, move):
+    def _move_dest_coords(self, move, state_before):
         """Return pixel (x, y) of destination card after move."""
         t = move[0]
         cascades = self.state["cascades"]
         try:
-            if t in ("cascade_to_foundation", "freecell_to_foundation"):
-                suits = ["C", "D", "H", "S"]
-                # Find which foundation just changed
-                for i, s in enumerate(suits):
-                    x = START_X + (i + 4) * COL_GAP
-                    return x, TOP_Y
+            if t == "cascade_to_foundation":
+                # Lá vừa move: lấy từ state_before (cascade src còn đầy đủ)
+                src_col = move[1]
+                card = state_before["cascades"][src_col][-1]   # (suit, rank)
+                suit = card[0]
+                i = ["C", "D", "H", "S"].index(suit)
+                return START_X + (i + 4) * COL_GAP, TOP_Y
+
+            if t == "freecell_to_foundation":
+                # Lá vừa move: lấy từ state_before (freecell src còn đầy đủ)
+                fc_idx = move[1]
+                card = state_before["freecells"][fc_idx]       # (suit, rank)
+                suit = card[0]
+                i = ["C", "D", "H", "S"].index(suit)
+                return START_X + (i + 4) * COL_GAP, TOP_Y
             if t == "cascade_to_freecell":
                 j = move[2]
                 return START_X + j * COL_GAP, TOP_Y
-            if t == "freecell_to_cascade":
+                
+            if t in ("freecell_to_cascade", "cascade_to_cascade"):
                 j = move[2]
                 col = cascades[j]
-                y = START_Y + max(0, len(col) - 1) * CASCADE_Y_STEP
+                
+                col_length = len(col)
+                step = self._get_y_step(col_length)
+                
+                y = START_Y + max(0, col_length - 1) * step
                 return START_X + j * COL_GAP, y
-            if t == "cascade_to_cascade":
-                j = move[2]
-                col = cascades[j]
-                y = START_Y + max(0, len(col) - 1) * CASCADE_Y_STEP
-                return START_X + j * COL_GAP, y
+                
         except Exception:
             pass
         return None, None
@@ -544,6 +672,36 @@ class FreeCellGUI:
     # ─────────────────────────────────────
     # Helpers
     # ─────────────────────────────────────
+    def _check_victory(self):
+        """Kiểm tra chiến thắng sau mỗi nước đi thủ công."""
+        if all(v == 13 for v in self.state["foundations"].values()):
+            self._show_victory()
+
+    def _trigger_auto_moves(self):
+        """Sau mỗi nước đi thủ công, kick off chuỗi auto-move."""
+        self._play_next_auto_move()
+
+    def _play_next_auto_move(self):
+        """
+        Tính lại auto-moves từ state HIỆN TẠI mỗi bước.
+        Tránh IndexError khi replay list move cũ bị stale
+        (freecell/cascade index thay đổi sau mỗi lần apply).
+        """
+        int_state = _to_int_state(self.state)
+        _, auto_moves = apply_safe_auto_moves(int_state)
+        if not auto_moves:
+            self.render()
+            self._check_victory()
+            return
+        # Chỉ apply move đầu tiên, sau đó tính lại từ state mới
+        move = auto_moves[0]
+        prev_state = copy.deepcopy(self.state)
+        self.state = apply_move(self.state, move)
+        self._flash_move(move, prev_state, callback=lambda: (
+            self.render(),
+            self.root.after(120, self._play_next_auto_move)
+        ))
+
     def _get_col_from_x(self, x):
         for i in range(len(self.state["cascades"])):
             left  = START_X + i * COL_GAP - COL_GAP // 2
@@ -572,7 +730,7 @@ class FreeCellGUI:
 
     def _can_stack(self, card1, card2):
         s1, r1 = card1; s2, r2 = card2
-        return (self._is_red(s1) != self._is_red(s2)) and (r1 == r2 - 1)
+        return (self._is_red(s1) != self._is_red(s2)) and (r1 == r2 + 1)
 
     def _is_valid_stack(self, stack):
         for i in range(len(stack) - 1):
@@ -593,15 +751,18 @@ class FreeCellGUI:
         cascades  = self.state["cascades"]
         freecells = self.state["freecells"]
     
-        # N = số freecell rỗng
         N = sum(1 for f in freecells if f is None)
     
-        # M = số cascade rỗng, KHÔNG đếm col_to (dù rỗng — nó là đích, không phải intermediate)
-        # col_from KHÔNG trừ ra (nó chưa rỗng khi ta đang tính)
+        # M = cascade rỗng, KHÔNG đếm col_to (đích không dùng làm intermediate)
         M = sum(
             1 for i, c in enumerate(cascades)
             if not c and i != col_to
         )
+
+        # Bug fix: nếu kéo TOÀN BỘ bài khỏi col_from,
+        # col_from sẽ thành rỗng → dùng được làm intermediate thêm
+        if len(cascades[col_from]) == stack_size:
+            M += 1
     
         max_cards = (N + 1) * (2 ** M)
         return stack_size <= max_cards
@@ -637,12 +798,13 @@ class FreeCellGUI:
     
         col     = int(col_str)
         cascade = self.state["cascades"][col]
-    
+        step = self._get_y_step(len(cascade))
+
         # ── Tính clicked_row từ tọa độ Y
         clicked_row = len(cascade) - 1
         for j in range(len(cascade) - 1):
-            card_top    = START_Y + j * CASCADE_Y_STEP
-            card_bottom = START_Y + (j + 1) * CASCADE_Y_STEP
+            card_top    = START_Y + j * step
+            card_bottom = START_Y + (j + 1) * step
             if card_top <= event.y < card_bottom:
                 clicked_row = j
                 break
@@ -731,7 +893,7 @@ class FreeCellGUI:
                         self.state["freecells"][i] = None
                         self.state["foundations"][fs] += 1
     
-            self.render()
+            self._trigger_auto_moves()
             self.drag_data["tag"] = None
             return
     
@@ -750,7 +912,7 @@ class FreeCellGUI:
             if len(stack) == 1 and self.state["freecells"][fc_idx] is None:
                 self.state["cascades"][col_from].pop()
                 self.state["freecells"][fc_idx] = stack[0]
-            self.render()
+            self._trigger_auto_moves()
             self.drag_data["tag"] = None
             return
     
@@ -762,7 +924,7 @@ class FreeCellGUI:
                 if card[0] == fs and card[1] == self.state["foundations"][fs] + 1:
                     self.state["cascades"][col_from].pop()
                     self.state["foundations"][fs] += 1
-            self.render()
+            self._trigger_auto_moves()
             self.drag_data["tag"] = None
             return
     
@@ -776,7 +938,7 @@ class FreeCellGUI:
                     self.state["cascades"][col_from].pop()
                 self.state["cascades"][col_to].extend(stack)
     
-        self.render()
+        self._trigger_auto_moves()
         self.drag_data["tag"] = None
 
     def on_double_click(self, event):
@@ -801,7 +963,8 @@ class FreeCellGUI:
             if val == self.state["foundations"][suit] + 1:
                 self.state["freecells"][i] = None
                 self.state["foundations"][suit] += 1
-            self.render(); return
+            self._trigger_auto_moves()
+            return
 
         col, row = int(col_str), int(row_str)
         if row != len(self.state["cascades"][col]) - 1:
@@ -812,24 +975,26 @@ class FreeCellGUI:
         if val == self.state["foundations"][suit] + 1:
             self.state["cascades"][col].pop()
             self.state["foundations"][suit] += 1
-            self.render(); return
+            self._trigger_auto_moves()
+            return
 
         for i in range(len(self.state["cascades"])):
             if self._is_valid_move(card, i):
                 self.state["cascades"][col].pop()
                 self.state["cascades"][i].append(card)
-                self.render(); return
+                self._trigger_auto_moves(); return
 
         for i in range(4):
             if self.state["freecells"][i] is None:
                 self.state["cascades"][col].pop()
                 self.state["freecells"][i] = card
-                self.render(); return
+                self._trigger_auto_moves(); return
 
     # ─────────────────────────────────────
     # Button commands
     # ─────────────────────────────────────
     def new_game(self):
+        self._solved_by_bot = False
         dlg = SeedDialog(self.root)
         self.root.wait_window(dlg)
 
@@ -837,14 +1002,35 @@ class FreeCellGUI:
         self.move_log.clear()
 
         if dlg.result is not None:
-            self.status_var.set(f"Seed: {dlg.result}")
-            self.state = create_initial_state(dlg.result)
+            self.current_seed = dlg.result
+            self.status_var.set(f"Seed: {self.current_seed}")
         else:
-            random_seed = random.randint(1, 32000)
-            self.status_var.set(f"Ngẫu nhiên (Seed: {random_seed})")
-            self.state = create_initial_state(random_seed)
+            self.current_seed = random.randint(1, 64000)
+            self.status_var.set(f"Ngẫu nhiên (Seed: {self.current_seed})")
 
+        self.is_instruction = False
+        self.state = create_initial_state(self.current_seed)
         self.render()
+
+    def restart_game(self):
+        self._solved_by_bot = False
+        self._cancel_anim()
+        self._hide_cancel_btn()
+        self._cancel_flag = False
+        self._solving = False
+        self.move_log.clear()
+
+        # Kiểm tra xem có đang ở chế độ hướng dẫn không
+        if getattr(self, "is_instruction", False):
+            self.state = create_instruction_state()
+            self.status_var.set("✦ Instruction mode")
+            self.render()
+            self.show_guide_overlay()
+        else:
+            # Tạo lại ván bài với seed đã lưu
+            self.state = create_initial_state(self.current_seed)
+            self.status_var.set(f"↺ Seed: {self.current_seed}")
+            self.render()
 
     def _cancel_anim(self):
         if self._anim_job:
@@ -858,7 +1044,10 @@ class FreeCellGUI:
         self._cancel_flag = False
         self._solving = False
         self.move_log.clear()
+
+        self.is_instruction = True
         self.state = create_instruction_state()
+
         self.status_var.set("✦ Instruction mode")
         self.render()
         self.show_guide_overlay()
@@ -874,23 +1063,30 @@ class FreeCellGUI:
         self._show_cancel_btn()
 
         def worker():
-            result = fn(self.state)
+            result = fn(_to_int_state(self.state))
+            
             def done():
                 self._hide_cancel_btn()
 
                 if self._cancel_flag:    
                     return
 
-                if result["solution"]:
+                # Sử dụng .get() an toàn hơn và kiểm tra is not None
+                if result and result.get("solution") is not None:
+                    self._solved_by_bot = True
+                    
                     sol = result["solution"]
-                    t   = round(result["time"], 3)
-                    exp = result["expanded_nodes"]
+                    t   = round(result.get("time", 0), 3)
+                    exp = result.get("expanded_nodes", 0)
+                    mem = result.get("memory_peak_traced_mb", "?")
+                    
                     self.status_var.set(
-                        f"{name}: {len(sol)} nước | {t}s | {exp} nodes")
+                        f"{name}: {len(sol)} nước | {t}s | {exp} nodes | Mem: {mem}MB")
+                    
                     self.move_log.set_solution(sol)
                     self.play_solution(sol, index=0)
                 else:
-                    self.status_var.set(f"{name}: Không tìm được lời giải")
+                    self.status_var.set(f"{name}: Không tìm được lời giải hoặc đã hủy")
                     self._solving = False
             self.root.after(0, done)
 
