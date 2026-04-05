@@ -192,7 +192,7 @@ def _finalize(algorithm_name, result):
 #   - Dùng parent_map thay vì lưu path trong mỗi queue entry
 #     → tiết kiệm bộ nhớ đáng kể (O(nodes) thay vì O(nodes × depth))
 
-def bfs_optimized(initial_state, max_nodes: int = 999_999):
+def bfs_optimized(initial_state, max_nodes: int = 1_999_999):
     tracemalloc.start()
     try:
         start    = time.time()
@@ -248,7 +248,7 @@ def bfs_optimized(initial_state, max_nodes: int = 999_999):
 #   - Dùng parent_map thay vì lưu path trong stack
 #     → giảm bộ nhớ, tránh copy list path mỗi node
 
-def dfs_optimized(initial_state, max_depth: int = 300):
+def dfs_optimized(initial_state, max_depth: int = 300, max_node: int = 1_999_999):
     tracemalloc.start()
     try:
         start    = time.time()
@@ -276,6 +276,9 @@ def dfs_optimized(initial_state, max_depth: int = 300):
 
             if depth >= max_depth:
                 continue
+
+            if expanded >= max_node:
+                break
 
             expanded += 1
 
@@ -311,7 +314,7 @@ def _reconstruct_path(parent_map, goal_key):
     return solution
 
 
-def ucs_optimized(initial_state, max_nodes=999_999):
+def ucs_optimized(initial_state, max_nodes=1_999_999):
     tracemalloc.start()
     try:
         start = time.time()
@@ -369,7 +372,7 @@ def ucs_optimized(initial_state, max_nodes=999_999):
 # A* core
 # ──────────────────────────────────────────────────────────
 
-def _astar_core(initial_state, weight: float, max_nodes: int = 500_000):
+def _astar_core(initial_state, weight: float, max_nodes: int = 1_999_999):
     """
     Pure A* search — không quản lý tracemalloc, không ghi CSV.
     Chỉ trả về raw result dict.

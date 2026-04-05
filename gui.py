@@ -9,7 +9,7 @@ from PIL import Image, ImageTk
 
 from optimized import bfs_optimized, dfs_optimized, ucs_optimized, astar_optimized
 import game as _game_module
-from utilities import SUITS, SUIT_IDX, EMPTY
+from utilities import SUITS, SUIT_IDX, EMPTY, apply_safe_auto_moves
 
 # ─────────────────────────────────────────
 # Compatibility layer
@@ -677,6 +677,31 @@ class FreeCellGUI:
         if all(v == 13 for v in self.state["foundations"].values()):
             self._show_victory()
 
+    def _trigger_auto_moves(self):
+        """Sau mỗi nước đi thủ công, kick off chuỗi auto-move."""
+        self._play_next_auto_move()
+
+    def _play_next_auto_move(self):
+        """
+        Tính lại auto-moves từ state HIỆN TẠI mỗi bước.
+        Tránh IndexError khi replay list move cũ bị stale
+        (freecell/cascade index thay đổi sau mỗi lần apply).
+        """
+        int_state = _to_int_state(self.state)
+        _, auto_moves = apply_safe_auto_moves(int_state)
+        if not auto_moves:
+            self.render()
+            self._check_victory()
+            return
+        # Chỉ apply move đầu tiên, sau đó tính lại từ state mới
+        move = auto_moves[0]
+        prev_state = copy.deepcopy(self.state)
+        self.state = apply_move(self.state, move)
+        self._flash_move(move, prev_state, callback=lambda: (
+            self.render(),
+            self.root.after(120, self._play_next_auto_move)
+        ))
+
     def _get_col_from_x(self, x):
         for i in range(len(self.state["cascades"])):
             left  = START_X + i * COL_GAP - COL_GAP // 2
@@ -726,15 +751,18 @@ class FreeCellGUI:
         cascades  = self.state["cascades"]
         freecells = self.state["freecells"]
     
-        # N = số freecell rỗng
         N = sum(1 for f in freecells if f is None)
     
-        # M = số cascade rỗng, KHÔNG đếm col_to (dù rỗng — nó là đích, không phải intermediate)
-        # col_from KHÔNG trừ ra (nó chưa rỗng khi ta đang tính)
+        # M = cascade rỗng, KHÔNG đếm col_to (đích không dùng làm intermediate)
         M = sum(
             1 for i, c in enumerate(cascades)
             if not c and i != col_to
         )
+
+        # Bug fix: nếu kéo TOÀN BỘ bài khỏi col_from,
+        # col_from sẽ thành rỗng → dùng được làm intermediate thêm
+        if len(cascades[col_from]) == stack_size:
+            M += 1
     
         max_cards = (N + 1) * (2 ** M)
         return stack_size <= max_cards
@@ -865,8 +893,7 @@ class FreeCellGUI:
                         self.state["freecells"][i] = None
                         self.state["foundations"][fs] += 1
     
-            self.render()
-            self._check_victory()
+            self._trigger_auto_moves()
             self.drag_data["tag"] = None
             return
     
@@ -885,7 +912,7 @@ class FreeCellGUI:
             if len(stack) == 1 and self.state["freecells"][fc_idx] is None:
                 self.state["cascades"][col_from].pop()
                 self.state["freecells"][fc_idx] = stack[0]
-            self.render()
+            self._trigger_auto_moves()
             self.drag_data["tag"] = None
             return
     
@@ -897,8 +924,7 @@ class FreeCellGUI:
                 if card[0] == fs and card[1] == self.state["foundations"][fs] + 1:
                     self.state["cascades"][col_from].pop()
                     self.state["foundations"][fs] += 1
-            self.render()
-            self._check_victory()
+            self._trigger_auto_moves()
             self.drag_data["tag"] = None
             return
     
@@ -912,7 +938,7 @@ class FreeCellGUI:
                     self.state["cascades"][col_from].pop()
                 self.state["cascades"][col_to].extend(stack)
     
-        self.render()
+        self._trigger_auto_moves()
         self.drag_data["tag"] = None
 
     def on_double_click(self, event):
@@ -937,8 +963,7 @@ class FreeCellGUI:
             if val == self.state["foundations"][suit] + 1:
                 self.state["freecells"][i] = None
                 self.state["foundations"][suit] += 1
-            self.render()
-            self._check_victory()
+            self._trigger_auto_moves()
             return
 
         col, row = int(col_str), int(row_str)
@@ -950,21 +975,20 @@ class FreeCellGUI:
         if val == self.state["foundations"][suit] + 1:
             self.state["cascades"][col].pop()
             self.state["foundations"][suit] += 1
-            self.render()
-            self._check_victory()
+            self._trigger_auto_moves()
             return
 
         for i in range(len(self.state["cascades"])):
             if self._is_valid_move(card, i):
                 self.state["cascades"][col].pop()
                 self.state["cascades"][i].append(card)
-                self.render(); return
+                self._trigger_auto_moves(); return
 
         for i in range(4):
             if self.state["freecells"][i] is None:
                 self.state["cascades"][col].pop()
                 self.state["freecells"][i] = card
-                self.render(); return
+                self._trigger_auto_moves(); return
 
     # ─────────────────────────────────────
     # Button commands
