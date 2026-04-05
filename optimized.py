@@ -283,49 +283,71 @@ def bfs_optimized(initial_state, max_nodes: int = 1_999_999):
 def dfs_optimized(initial_state, max_depth: int = 300, max_node: int = 1_999_999):
     tracemalloc.start()
     try:
-        start    = time.time()
+        start = time.time()
+
         init_key = state_key(initial_state)
 
-        # Stack lưu (key, depth) thay vì (state, path)
-        stack      = [(init_key, 0)]
-        visited    = {init_key}
-        parent_map = {init_key: (None, None)}
-        state_map  = {init_key: initial_state}
-        expanded   = 0
+        # stack: (state, key, depth, iterator, moves)
+        stack = [(initial_state, init_key, 0, None, [])]
+
+        path_set = {init_key}
+        expanded = 0
 
         while stack:
-            cur_key, depth = stack.pop()
-            state = state_map.get(cur_key)
-            if state is None:           # đã bị xóa (node cũ trong stack)
-                continue
+            state, key, depth, it, moves = stack[-1]
 
+            # goal
             if is_goal(state):
-                solution = _reconstruct_path(parent_map, cur_key)
                 return _finalize("DFS", {
-                    "solution": solution, "time": time.time() - start,
-                    "expanded_nodes": expanded, "length": len(solution),
+                    "solution": moves,
+                    "time": time.time() - start,
+                    "expanded_nodes": expanded,
+                    "length": len(moves),
                 })
 
-            if depth >= max_depth:
+            # limit
+            if depth >= max_depth or expanded >= max_node:
+                stack.pop()
+                path_set.remove(key)   # 🔥 O(1), không cần recompute
                 continue
 
-            if expanded >= max_node:
-                break
+            # first expand
+            if it is None:
+                expanded += 1
+                neighbors = list(_expand(state))
+                neighbors.reverse()
 
-            expanded += 1
+                stack[-1] = (state, key, depth, iter(neighbors), moves)
+                continue
 
-            for succ, move, _cost in reversed(_expand(state)):
-                key = state_key(succ)
-                if key not in visited:
-                    visited.add(key)
-                    parent_map[key] = (cur_key, move)
-                    state_map[key]  = succ
-                    stack.append((key, depth + 1))
+            try:
+                succ, move, _ = next(it)
+                succ_key = state_key(succ)
+
+                if succ_key in path_set:
+                    continue
+
+                path_set.add(succ_key)
+
+                stack.append((
+                    succ,
+                    succ_key,
+                    depth + 1,
+                    None,
+                    moves + [move]
+                ))
+
+            except StopIteration:
+                stack.pop()
+                path_set.remove(key)   # 🔥 reuse key
 
         return _finalize("DFS", {
-            "solution": None, "time": time.time() - start,
-            "expanded_nodes": expanded, "length": 0,
+            "solution": None,
+            "time": time.time() - start,
+            "expanded_nodes": expanded,
+            "length": 0,
         })
+
     finally:
         if tracemalloc.is_tracing():
             tracemalloc.stop()
