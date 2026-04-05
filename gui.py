@@ -11,12 +11,7 @@ from optimized import bfs_optimized, dfs_optimized, ucs_optimized, astar_optimiz
 import game as _game_module
 from utilities import SUITS, SUIT_IDX, EMPTY, apply_safe_auto_moves
 
-# ─────────────────────────────────────────
-# Compatibility layer
-# GUI dùng state format cũ (dict + list + None) vì drag-drop mutate trực tiếp.
-# Các hàm bên dưới bridge GUI ↔ int-based game.py / solver.
-# ─────────────────────────────────────────
-_SUIT_ORDER = ["H", "D", "C", "S"]   # khớp index 0-3 trong foundations tuple
+_SUIT_ORDER = ["H", "D", "C", "S"]
 
 def _to_int_state(gui_state: dict) -> dict:
     """GUI state → int-based state (cho solver / apply_move nội bộ)."""
@@ -58,9 +53,9 @@ def create_initial_state(gamenumber: int) -> dict:
 def create_instruction_state() -> dict:
     return _to_gui_state(_game_module.create_instruction_state())
 
-# ─────────────────────────────────────────
+# ────────────────
 # Layout constants
-# ─────────────────────────────────────────
+# ────────────────
 CARD_W    = 96
 CARD_H    = 144
 COL_GAP   = 142
@@ -72,9 +67,7 @@ CASCADE_Y_STEP = 32
 WIN_W     = 1280
 WIN_H     = 720
 
-# Bottom bar height
 BAR_H     = 56
-# MOVE_LOG_H = 80   # height of move-log strip above buttons
 
 # Colors (Regal Blue & Gold Theme)
 BG          = "#0a1128"
@@ -116,9 +109,9 @@ def move_to_label(move):
     return str(move)
 
 
-# ─────────────────────────────────────────
+# ────────────
 # Seed Dialog
-# ─────────────────────────────────────────
+# ────────────
 class SeedDialog(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
@@ -180,24 +173,21 @@ class SeedDialog(tk.Toplevel):
         self.destroy()
 
 
-# ─────────────────────────────────────────
-# Move Log Strip (3-window display)
-# ─────────────────────────────────────────
+# ──────────────
+# Move Log Strip 
+# ──────────────
 class MoveLogStrip(tk.Frame):
     """
     Hiển thị 3 nước đi: [trước] ➔ [HIỆN TẠI] ➔ [sắp tới]
     """
     def __init__(self, parent, **kw):
-        # Tăng chiều rộng lên một chút để có thêm không gian thở
         super().__init__(parent, bg=LOG_BG, width=540, height=36,
                          highlightthickness=1, highlightbackground=LOG_BORDER, **kw)
         self.pack_propagate(False)
 
-        # Tạo một frame con nằm ngay chính giữa để chứa text
         self.content = tk.Frame(self, bg=LOG_BG)
         self.content.place(relx=0.5, rely=0.5, anchor="center")
 
-        # Index label (Bước)
         self.idx_var = tk.StringVar(value="")
         tk.Label(self.content, textvariable=self.idx_var,
                  font=("Consolas", 8), fg=TEXT_DIM, bg=LOG_BG).pack(side=tk.LEFT, padx=(0, 15))
@@ -248,7 +238,6 @@ class MoveLogStrip(tk.Frame):
         self.lbl_curr.config(text=t_curr)
         self.lbl_next.config(text=t_next)
 
-        # Tự động hiển thị/ẩn mũi tên dựa trên việc có text đi kèm hay không
         self.arrow1.config(text=" < " if t_prev else "")
         self.arrow2.config(text=" > " if t_next else "")
 
@@ -268,9 +257,9 @@ class MoveLogStrip(tk.Frame):
         self.idx_var.set("")
 
 
-# ─────────────────────────────────────────
+# ────────
 # Main GUI
-# ─────────────────────────────────────────
+# ────────
 class FreeCellGUI:
     def __init__(self, root):
         self.root = root
@@ -286,8 +275,8 @@ class FreeCellGUI:
         self.guide_image = None
         self._load_images()
 
-        self._solving   = False   # lock during solve
-        self._anim_job  = None    # after() id for cancel
+        self._solving   = False
+        self._anim_job  = None
         self._solution  = []
         self._cancel_flag = False
 
@@ -296,9 +285,10 @@ class FreeCellGUI:
 
         self.drag_data = {"tag": None, "start_x": 0, "start_y": 0}
 
-    # ─────────────────────────────────────
+    # ─────────────
     # Image loading
-    # ─────────────────────────────────────
+    # ─────────────
+
     def _load_images(self):
         suits  = ["C", "D", "H", "S"]
         values = range(1, 14)
@@ -328,9 +318,9 @@ class FreeCellGUI:
         else:
             self.bg_image = None
 
-    # ─────────────────────────────────────
+    # ───────────────
     # Build UI layout
-    # ─────────────────────────────────────
+    # ───────────────
     def _build_ui(self):
         # ── Bottom button bar
         self.bar = tk.Frame(self.root, bg=BTN_BG, height=BAR_H,
@@ -338,7 +328,7 @@ class FreeCellGUI:
         self.bar.pack(side=tk.BOTTOM, fill=tk.X)
         self.bar.pack_propagate(False)
 
-        # ── Main canvas (game board)
+        # ── Main canvas
         canvas_h = WIN_H - BAR_H - 2
         self.canvas = tk.Canvas(self.root, width=WIN_W, height=canvas_h,
                                 bg=FELT, highlightthickness=0)
@@ -457,9 +447,9 @@ class FreeCellGUI:
         dynamic_step = max_allowed_height // (col_length - 1)  
         return min(CASCADE_Y_STEP, dynamic_step)
 
-    # ─────────────────────────────────────
+    # ──────────
     # Rendering
-    # ─────────────────────────────────────
+    # ──────────
     def render(self):
         c = self.canvas
         c.delete("all")
@@ -537,31 +527,26 @@ class FreeCellGUI:
 
     def show_guide_overlay(self):
         if self.guide_image:
-            # Vẽ ảnh hướng dẫn với tag riêng để dễ quản lý
             self.canvas.create_image(0, 0, anchor=tk.NW, image=self.guide_image, tags="guide_overlay")
             
-            # Thêm nút "X" hoặc dòng chữ hướng dẫn tắt ở góc màn hình
             self.canvas.create_rectangle(WIN_W-90, 10, WIN_W-70, 30, fill="#b71c1c", outline="white", tags="guide_overlay")
             self.canvas.create_text(WIN_W-80, 20, text="X", fill="white", 
                                     font=("Consolas", 10, "bold"), tags="guide_overlay")
 
-            # Click vào bất kỳ đâu trên ảnh hoặc nút để tắt
             self.canvas.tag_bind("guide_overlay", "<Button-1>", lambda e: self.hide_guide_overlay())
             
-            # Hỗ trợ phím ESC để tắt nhanh
             self.root.bind("<Escape>", lambda e: self.hide_guide_overlay())
         else:
             self.status_var.set("⚠ Không tìm thấy file guide.png")
 
     def hide_guide_overlay(self):
-        # Xóa lớp ảnh hướng dẫn, lộ ra bàn chơi 'create_instruction_state' bên dưới
         self.canvas.delete("guide_overlay")
         self.root.unbind("<Escape>")
         self.status_var.set("✦ Bạn đang trong chế độ chơi thử hướng dẫn")
 
-    # ─────────────────────────────────────
+    # ────────────────────────
     # Smooth solution playback
-    # ─────────────────────────────────────
+    # ────────────────────────
     def play_solution(self, solution, index=0, delay_ms=380):
         if index >= len(solution):
             self.status_var.set(f"✓ Giải xong! {len(solution)} nước")
@@ -576,7 +561,7 @@ class FreeCellGUI:
         prev_state = copy.deepcopy(self.state)
         self.state = apply_move(self.state, move)
 
-        # Flash highlight on moved card (simulate drag feel)
+        # Flash highlight on moved card
         self._flash_move(move, prev_state, callback=lambda: (
             self.render(),
             setattr(self, '_anim_job',
@@ -637,17 +622,15 @@ class FreeCellGUI:
         cascades = self.state["cascades"]
         try:
             if t == "cascade_to_foundation":
-                # Lá vừa move: lấy từ state_before (cascade src còn đầy đủ)
                 src_col = move[1]
-                card = state_before["cascades"][src_col][-1]   # (suit, rank)
+                card = state_before["cascades"][src_col][-1]
                 suit = card[0]
                 i = ["C", "D", "H", "S"].index(suit)
                 return START_X + (i + 4) * COL_GAP, TOP_Y
 
             if t == "freecell_to_foundation":
-                # Lá vừa move: lấy từ state_before (freecell src còn đầy đủ)
                 fc_idx = move[1]
-                card = state_before["freecells"][fc_idx]       # (suit, rank)
+                card = state_before["freecells"][fc_idx]
                 suit = card[0]
                 i = ["C", "D", "H", "S"].index(suit)
                 return START_X + (i + 4) * COL_GAP, TOP_Y
@@ -669,9 +652,9 @@ class FreeCellGUI:
             pass
         return None, None
 
-    # ─────────────────────────────────────
+    # ────────
     # Helpers
-    # ─────────────────────────────────────
+    # ────────
     def _check_victory(self):
         """Kiểm tra chiến thắng sau mỗi nước đi thủ công."""
         if all(v == 13 for v in self.state["foundations"].values()):
@@ -693,7 +676,6 @@ class FreeCellGUI:
             self.render()
             self._check_victory()
             return
-        # Chỉ apply move đầu tiên, sau đó tính lại từ state mới
         move = auto_moves[0]
         prev_state = copy.deepcopy(self.state)
         self.state = apply_move(self.state, move)
@@ -753,23 +735,20 @@ class FreeCellGUI:
     
         N = sum(1 for f in freecells if f is None)
     
-        # M = cascade rỗng, KHÔNG đếm col_to (đích không dùng làm intermediate)
         M = sum(
             1 for i, c in enumerate(cascades)
             if not c and i != col_to
         )
 
-        # Bug fix: nếu kéo TOÀN BỘ bài khỏi col_from,
-        # col_from sẽ thành rỗng → dùng được làm intermediate thêm
         if len(cascades[col_from]) == stack_size:
             M += 1
     
         max_cards = (N + 1) * (2 ** M)
         return stack_size <= max_cards
 
-    # ─────────────────────────────────────
+    # ────────────
     # Mouse events
-    # ─────────────────────────────────────
+    # ────────────
     def on_press(self, event):
         item = self.canvas.find_closest(event.x, event.y)
         if not item:
@@ -781,7 +760,6 @@ class FreeCellGUI:
         parts = tag.split("_")
         col_str, row_str = parts[1], parts[2]
     
-        # ── Freecell: chỉ kéo 1 lá
         if col_str == "freecell":
             i = int(row_str)
             if self.state["freecells"][i]:
@@ -800,7 +778,6 @@ class FreeCellGUI:
         cascade = self.state["cascades"][col]
         step = self._get_y_step(len(cascade))
 
-        # ── Tính clicked_row từ tọa độ Y
         clicked_row = len(cascade) - 1
         for j in range(len(cascade) - 1):
             card_top    = START_Y + j * step
@@ -809,7 +786,6 @@ class FreeCellGUI:
                 clicked_row = j
                 break
     
-        # ── Tìm stack valid bắt đầu từ clicked_row
         row   = len(cascade) - 1
         stack = cascade[row:]
         for start in range(clicked_row, len(cascade)):
@@ -819,18 +795,14 @@ class FreeCellGUI:
                 stack = candidate
                 break
     
-        # ── Tính max_drag supermove (worst-case: không biết col_to nên không trừ col nào)
-        #    Dùng tất cả empty cascades trừ col hiện tại làm M (col hiện tại sắp có thể rỗng)
         N = sum(1 for f in self.state["freecells"] if f is None)
         M = sum(1 for i, c in enumerate(self.state["cascades"]) if not c and i != col)
         max_drag = (N + 1) * (2 ** M)
     
-        # Trim stack nếu vượt quá max_drag
         if len(stack) > max_drag:
             row   = len(cascade) - max_drag
             stack = cascade[row:]
     
-        # ── Update drag_data SAU KHI trim
         self.drag_data.update({
             "tag": f"card_{col}_{row}",
             "col": col, "row": row, "stack": list(stack),
@@ -853,11 +825,9 @@ class FreeCellGUI:
         row = self.drag_data.get("row")
     
         if isinstance(col, int):
-            # Kéo từ cascade: move tất cả lá từ row trở xuống
             for j in range(row, len(self.state["cascades"][col])):
                 self.canvas.move(f"card_{col}_{j}", dx, dy)
         else:
-            # Kéo từ freecell: move 1 lá theo tag
             self.canvas.move(tag, dx, dy)
     
         self.drag_data["start_x"] = event.x
@@ -872,14 +842,12 @@ class FreeCellGUI:
         col_str  = parts[1]
         row_str  = parts[2]
     
-        # ── Thả từ freecell
         if col_str == "freecell":
             i      = int(row_str)
             card   = self.state["freecells"][i]
             moved  = False
     
             if card:
-                # Thả vào cascade
                 col_to = self._get_col_from_x(event.x)
                 if col_to != -1 and self._is_valid_move(card, col_to):
                     self.state["freecells"][i] = None
@@ -887,7 +855,6 @@ class FreeCellGUI:
                     moved = True
     
                 if not moved:
-                    # Thả vào foundation
                     fs = self._get_foundation_from_xy(event)
                     if fs and card[0] == fs and card[1] == self.state["foundations"][fs] + 1:
                         self.state["freecells"][i] = None
@@ -906,7 +873,6 @@ class FreeCellGUI:
             self.drag_data["tag"] = None
             return
     
-        # ── Thả vào freecell (chỉ 1 lá)
         fc_idx = self._get_freecell_from_xy(event)
         if fc_idx != -1:
             if len(stack) == 1 and self.state["freecells"][fc_idx] is None:
@@ -916,7 +882,6 @@ class FreeCellGUI:
             self.drag_data["tag"] = None
             return
     
-        # ── Thả vào foundation (chỉ 1 lá)
         fs = self._get_foundation_from_xy(event)
         if fs:
             if len(stack) == 1:
@@ -928,12 +893,9 @@ class FreeCellGUI:
             self.drag_data["tag"] = None
             return
     
-        # ── Thả vào cascade (có thể supermove)
         col_to = self._get_col_from_x(event.x)
         if 0 <= col_to < 8 and col_to != col_from:
-            # Lá tiếp xúc với col_to là stack[0] (lá dưới cùng, rank lớn nhất)
             if self._is_valid_move(stack[0], col_to) and self._can_supermove(len(stack), col_from, col_to):
-                # Pop đúng số lá = len(stack) từ col_from
                 for _ in range(len(stack)):
                     self.state["cascades"][col_from].pop()
                 self.state["cascades"][col_to].extend(stack)
@@ -990,9 +952,9 @@ class FreeCellGUI:
                 self.state["freecells"][i] = card
                 self._trigger_auto_moves(); return
 
-    # ─────────────────────────────────────
+    # ───────────────
     # Button commands
-    # ─────────────────────────────────────
+    # ───────────────
     def new_game(self):
         self._solved_by_bot = False
         dlg = SeedDialog(self.root)
@@ -1019,15 +981,12 @@ class FreeCellGUI:
         self._cancel_flag = False
         self._solving = False
         self.move_log.clear()
-
-        # Kiểm tra xem có đang ở chế độ hướng dẫn không
         if getattr(self, "is_instruction", False):
             self.state = create_instruction_state()
             self.status_var.set("✦ Instruction mode")
             self.render()
             self.show_guide_overlay()
         else:
-            # Tạo lại ván bài với seed đã lưu
             self.state = create_initial_state(self.current_seed)
             self.status_var.set(f"↺ Seed: {self.current_seed}")
             self.render()
@@ -1048,7 +1007,7 @@ class FreeCellGUI:
         self.is_instruction = True
         self.state = create_instruction_state()
 
-        self.status_var.set("✦ Instruction mode")
+        self.status_var.set("Instruction mode")
         self.render()
         self.show_guide_overlay()
 
@@ -1071,7 +1030,6 @@ class FreeCellGUI:
                 if self._cancel_flag:    
                     return
 
-                # Sử dụng .get() an toàn hơn và kiểm tra is not None
                 if result and result.get("solution") is not None:
                     self._solved_by_bot = True
                     

@@ -1,8 +1,8 @@
 from utilities import SUITS, SUIT_IDX, EMPTY, _is_safe_to_auto_move
 
-# ──────────────────────────────────────────────
+# ────────────────────
 # Deck / Initial state
-# ──────────────────────────────────────────────
+# ────────────────────
 
 _GAME_SUITS = ['C', 'D', 'H', 'S']
 
