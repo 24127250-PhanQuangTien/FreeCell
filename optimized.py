@@ -12,57 +12,39 @@ from utilities import state_key, filter_dominated_moves, EMPTY
 # ──────────────────────────────────────────────────────────
 # Heuristic  (REDESIGNED)
 # ──────────────────────────────────────────────────────────
-#
-# Vấn đề cũ:
-#   - Values quá nhỏ (0.1 / 0.3 / 0.99) → h bị g nuốt khi search sâu
-#   - Chỉ check burial depth của "lá cần tiếp theo" → bỏ sót nhiều thông tin
-#
-# Thiết kế mới:
-#   h ≈ (số lá chưa lên foundation)
-#     + (tổng burial depth của TẤT CẢ lá cần lên)  ← thay đổi lớn nhất
-#     + (sequence break penalty mạnh hơn)
-#     + (freecell occupancy penalty)
-#
-# Với weighted A* (w ≥ 3), không cần admissible → ưu tiên informative hơn.
 
 # def heuristic(state) -> float:
 #     foundations = state["foundations"]
 #     cascades    = state["cascades"]
 #     freecells   = state["freecells"]
 
-#     remaining = 52 - sum(foundations.values())
+#     remaining = 52 - sum(foundations)
 #     if remaining == 0:
 #         return 0.0
 
-#     # ── Xây depth_map: mỗi lá → số lá đang đè lên nó ──
-#     depth_map: dict = {}
-#     for col in cascades:
-#         n = len(col)
-#         for i, card in enumerate(col):
-#             depth_map[card] = n - 1 - i   # lá ở top → depth=0
+#     # Burial depth của lá tiếp theo cần lên foundation cho mỗi suit
+#     targets: dict = {}
+#     for suit in range(4):
+#         need_rank = foundations[suit] + 1
+#         if need_rank <= 13:
+#             targets[suit * 13 + (need_rank - 1)] = 0
 
-#     total = float(remaining)  # Component 1: mỗi lá cần ≥1 move
+#     unresolved = set(targets)
+#     if unresolved:
+#         for col in cascades:
+#             for depth, cid in enumerate(reversed(col)):
+#                 if cid in unresolved:
+#                     targets[cid] = depth
+#                     unresolved.discard(cid)
+#                     if not unresolved:
+#                         break
+#             if not unresolved:
+#                 break
 
-#     # Component 2: burial depth của TẤT CẢ lá chưa lên foundation
-#     for suit in ("H", "D", "C", "S"):
-#         for rank in range(foundations[suit] + 1, 14):
-#             card = (suit, rank)
-#             depth = depth_map.get(card, 0)   # 0 nếu ở freecell hoặc top
-#             total += depth                    # mỗi lá đè → cần thêm ≥1 move
+#     need_depth  = sum(targets.values())
+#     occupied_fc = sum(1 for c in freecells if c != EMPTY)
 
-#     # Component 3: sequence break penalty (tăng từ 0.3 → 1.5)
-#     for col in cascades:
-#         for i in range(len(col) - 1):
-#             s1, r1 = col[i]
-#             s2, r2 = col[i + 1]
-#             if (is_red(s1) == is_red(s2)) or (r2 != r1 - 1):
-#                 total += 1.5
-
-#     # Component 4: freecell occupancy penalty
-#     fc_occupied = sum(1 for c in freecells if c is not None)
-#     total += fc_occupied * 1.5
-
-#     return total
+#     return float(remaining) + 1.5 * need_depth + 0.5 * occupied_fc
 
 def heuristic(state) -> float:
     foundations = state["foundations"]
@@ -73,29 +55,79 @@ def heuristic(state) -> float:
     if remaining == 0:
         return 0.0
 
-    # Burial depth của lá tiếp theo cần lên foundation cho mỗi suit
-    targets: dict = {}
+    # ─────────────────────────────
+    # 1. Multi-layer targets
+    # ─────────────────────────────
+    targets = {}
     for suit in range(4):
-        need_rank = foundations[suit] + 1
-        if need_rank <= 13:
-            targets[suit * 13 + (need_rank - 1)] = 0
+        base = foundations[suit]
+        for k in range(1, 4):
+            rank = base + k
+            if rank <= 13:
+                cid = suit * 13 + (rank - 1)
+                targets[cid] = 0
 
     unresolved = set(targets)
-    if unresolved:
-        for col in cascades:
-            for depth, cid in enumerate(reversed(col)):
-                if cid in unresolved:
-                    targets[cid] = depth
-                    unresolved.discard(cid)
-                    if not unresolved:
-                        break
-            if not unresolved:
-                break
 
-    need_depth  = sum(targets.values())
-    occupied_fc = sum(1 for c in freecells if c != EMPTY)
+    for col in cascades:
+        for depth, cid in enumerate(reversed(col)):
+            if cid in unresolved:
+                targets[cid] = depth * 1.3
+                unresolved.discard(cid)
+        if not unresolved:
+            break
 
-    return float(remaining) + 1.5 * need_depth + 0.5 * occupied_fc
+    need_depth = sum(targets.values())
+
+    # ─────────────────────────────
+    # 2. Freecell usage
+    # ─────────────────────────────
+    occupied_fc = 0
+    for c in freecells:
+        if c != EMPTY:
+            occupied_fc += 1
+
+    # ─────────────────────────────
+    # 3. Bad sequence (INLINE)
+    # ─────────────────────────────
+    bad_seq = 0
+    for col in cascades:
+        for i in range(len(col) - 1):
+            a = col[i]
+            b = col[i + 1]
+
+            # inline check:
+            # same color OR not descending
+            if (a // 13) % 2 == (b // 13) % 2 or (a % 13) != (b % 13 + 1):
+                bad_seq += 1
+
+    # ─────────────────────────────
+    # 4. Mobility penalty
+    # ─────────────────────────────
+    empty_cols = 0
+    for col in cascades:
+        if not col:
+            empty_cols += 1
+
+    mobility = empty_cols + (len(freecells) - occupied_fc)
+
+    if mobility == 0:
+        mobility_penalty = 8.0
+    elif mobility == 1:
+        mobility_penalty = 4.0
+    else:
+        mobility_penalty = 0.0
+
+    # ─────────────────────────────
+    # FINAL
+    # ─────────────────────────────
+    return (
+        1.0 * remaining
+        + 1.1 * need_depth
+        + 0.6 * occupied_fc
+        + 0.8 * bad_seq
+        + mobility_penalty
+    )
 
 # ──────────────────────────────────────────────────────────
 # Move cost  (REDESIGNED — nhất quán, không oscillation)
