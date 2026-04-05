@@ -8,44 +8,6 @@ import tracemalloc
 from game import get_moves, apply_move, is_goal, is_red
 from utilities import state_key, filter_dominated_moves, EMPTY
 
-
-# ──────────────────────────────────────────────────────────
-# Heuristic  (REDESIGNED)
-# ──────────────────────────────────────────────────────────
-
-# def heuristic(state) -> float:
-#     foundations = state["foundations"]
-#     cascades    = state["cascades"]
-#     freecells   = state["freecells"]
-
-#     remaining = 52 - sum(foundations)
-#     if remaining == 0:
-#         return 0.0
-
-#     # Burial depth của lá tiếp theo cần lên foundation cho mỗi suit
-#     targets: dict = {}
-#     for suit in range(4):
-#         need_rank = foundations[suit] + 1
-#         if need_rank <= 13:
-#             targets[suit * 13 + (need_rank - 1)] = 0
-
-#     unresolved = set(targets)
-#     if unresolved:
-#         for col in cascades:
-#             for depth, cid in enumerate(reversed(col)):
-#                 if cid in unresolved:
-#                     targets[cid] = depth
-#                     unresolved.discard(cid)
-#                     if not unresolved:
-#                         break
-#             if not unresolved:
-#                 break
-
-#     need_depth  = sum(targets.values())
-#     occupied_fc = sum(1 for c in freecells if c != EMPTY)
-
-#     return float(remaining) + 1.5 * need_depth + 0.5 * occupied_fc
-
 def heuristic(state) -> float:
     foundations = state["foundations"]
     cascades    = state["cascades"]
@@ -54,10 +16,7 @@ def heuristic(state) -> float:
     remaining = 52 - sum(foundations)
     if remaining == 0:
         return 0.0
-
-    # ─────────────────────────────
-    # 1. Multi-layer targets
-    # ─────────────────────────────
+    
     targets = {}
     for suit in range(4):
         base = foundations[suit]
@@ -79,17 +38,11 @@ def heuristic(state) -> float:
 
     need_depth = sum(targets.values())
 
-    # ─────────────────────────────
-    # 2. Freecell usage
-    # ─────────────────────────────
     occupied_fc = 0
     for c in freecells:
         if c != EMPTY:
             occupied_fc += 1
 
-    # ─────────────────────────────
-    # 3. Bad sequence (INLINE)
-    # ─────────────────────────────
     bad_seq = 0
     for col in cascades:
         for i in range(len(col) - 1):
@@ -101,9 +54,6 @@ def heuristic(state) -> float:
             if (a // 13) % 2 == (b // 13) % 2 or (a % 13) != (b % 13 + 1):
                 bad_seq += 1
 
-    # ─────────────────────────────
-    # 4. Mobility penalty
-    # ─────────────────────────────
     empty_cols = 0
     for col in cascades:
         if not col:
@@ -118,9 +68,6 @@ def heuristic(state) -> float:
     else:
         mobility_penalty = 0.0
 
-    # ─────────────────────────────
-    # FINAL
-    # ─────────────────────────────
     return (
         1.0 * remaining
         + 1.1 * need_depth
@@ -129,36 +76,23 @@ def heuristic(state) -> float:
         + mobility_penalty
     )
 
-# ──────────────────────────────────────────────────────────
-# Move cost  (REDESIGNED — nhất quán, không oscillation)
-# ──────────────────────────────────────────────────────────
-#
-# Vấn đề cũ:
-#   cascade→freecell = 3.0  nhưng  freecell→cascade = 1.5
-#   → "undo" rẻ hơn "do" → A* loop qua lại vô tận
-#
-# Thiết kế mới: uniform cost = 1.0, ưu đãi nhẹ cho foundation moves.
-#   Mọi move đều cost bằng nhau → f = g + w*h sạch và dễ hiểu.
-#   Foundation move (progress thật sự) → 0.5 để ưu tiên.
-
 def move_cost(move, state_before, state_after) -> float:
     mtype = move[0]
 
     if "foundation" in mtype:
-        return 0.5      # tiến trình thật → luôn ưu tiên
+        return 0.5
 
-    # Tạo cột rỗng: có giá trị → khuyến khích nhẹ
     if mtype in ("cascade_to_freecell", "cascade_to_cascade"):
         src = move[1]
         if len(state_before["cascades"][src]) == 1:
             return 0.8  # tạo empty col
 
-    return 1.0          # tất cả các move khác đều bằng nhau
+    return 1.0
 
 
-# ──────────────────────────────────────────────────────────
+# ──────────────────────
 # Helper: expand 1 state
-# ──────────────────────────────────────────────────────────
+# ──────────────────────
 
 def _expand(state):
     """
@@ -178,9 +112,9 @@ def _expand(state):
 
 
 
-# ──────────────────────────────────────────────────────────
+# ──────────────────
 # Helper: save stats
-# ──────────────────────────────────────────────────────────
+# ──────────────────
 
 _SOLVER_STATS_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "solver_runs.csv")
 
@@ -215,14 +149,9 @@ def _finalize(algorithm_name, result):
     return result
 
 
-# ──────────────────────────────────────────────────────────
+# ─────────────
 # BFS optimized
-# ──────────────────────────────────────────────────────────
-#
-# Thay đổi so với phiên bản cũ:
-#   - Thêm max_nodes (mặc định 150_000) → tránh lag / OOM vô hạn
-#   - Dùng parent_map thay vì lưu path trong mỗi queue entry
-#     → tiết kiệm bộ nhớ đáng kể (O(nodes) thay vì O(nodes × depth))
+# ─────────────
 
 def bfs_optimized(initial_state, max_nodes: int = 1_999_999):
     tracemalloc.start()
@@ -260,7 +189,6 @@ def bfs_optimized(initial_state, max_nodes: int = 1_999_999):
                     state_map[key]  = succ
                     queue.append(key)
 
-            # Giải phóng state đã expand xong (không cần nữa)
             del state_map[cur_key]
 
         return _finalize("BFS", {
@@ -272,13 +200,9 @@ def bfs_optimized(initial_state, max_nodes: int = 1_999_999):
             tracemalloc.stop()
 
 
-# ──────────────────────────────────────────────────────────
+# ─────────────
 # DFS optimized
-# ──────────────────────────────────────────────────────────
-#
-# Thay đổi so với phiên bản cũ:
-#   - Dùng parent_map thay vì lưu path trong stack
-#     → giảm bộ nhớ, tránh copy list path mỗi node
+# ─────────────
 
 def dfs_optimized(initial_state, max_depth: int = 300, max_node: int = 1_999_999):
     tracemalloc.start()
@@ -308,7 +232,7 @@ def dfs_optimized(initial_state, max_depth: int = 300, max_node: int = 1_999_999
             # limit
             if depth >= max_depth or expanded >= max_node:
                 stack.pop()
-                path_set.remove(key)   # 🔥 O(1), không cần recompute
+                path_set.remove(key)
                 continue
 
             # first expand
@@ -339,7 +263,7 @@ def dfs_optimized(initial_state, max_depth: int = 300, max_node: int = 1_999_999
 
             except StopIteration:
                 stack.pop()
-                path_set.remove(key)   # 🔥 reuse key
+                path_set.remove(key)
 
         return _finalize("DFS", {
             "solution": None,
@@ -353,9 +277,9 @@ def dfs_optimized(initial_state, max_depth: int = 300, max_node: int = 1_999_999
             tracemalloc.stop()
 
 
-# ──────────────────────────────────────────────────────────
+# ─────────────
 # UCS optimized
-# ──────────────────────────────────────────────────────────
+# ─────────────
 
 def _reconstruct_path(parent_map, goal_key):
     solution = []
@@ -422,9 +346,9 @@ def ucs_optimized(initial_state, max_nodes=1_999_999):
             tracemalloc.stop()
 
 
-# ──────────────────────────────────────────────────────────
+# ────────
 # A* core
-# ──────────────────────────────────────────────────────────
+# ────────
 
 def _astar_core(initial_state, weight: float, max_nodes: int = 1_999_999):
     """
@@ -503,20 +427,6 @@ def _astar_core(initial_state, weight: float, max_nodes: int = 1_999_999):
         "length":         0,
     }
 
-
-# ──────────────────────────────────────────────────────────
-# A* optimized  (Anytime Weighted A*)
-# ──────────────────────────────────────────────────────────
-#
-# Thay đổi so với phiên bản cũ:
-#   - Weights: [2.0, 3.0, 5.0] → [3.0, 5.0, 8.0]
-#     w=3.0 đã đủ aggressive với heuristic mới; w=8.0 là fallback
-#   - max_nodes: 150K → 200K (heuristic tốt hơn → ít nodes hơn trên thực tế)
-#
-# Tại sao w cao hơn?
-#   h mới lớn hơn nhiều → cùng 1 w, search đã focused hơn.
-#   Với h ~ 80-150, w=3 → 2h_old ≈ 3h_new về mức độ greedy.
-
 _ASTAR_WEIGHTS   = [3.0, 5.0, 8.0]
 _ASTAR_MAX_NODES = 500_000
 
@@ -524,13 +434,6 @@ def astar_optimized(initial_state):
     """
     Anytime Weighted A*:
     Thử lần lượt weight=[3.0, 5.0, 8.0]. Trả về solution đầu tiên tìm được.
-
-    Sửa lỗi so với phiên bản cũ:
-    - tracemalloc được quản lý TẠI ĐÂY, không trong _astar_core
-      → tránh bị stop sớm sau lần gọi đầu tiên
-    - _finalize (ghi CSV) chỉ gọi 1 lần duy nhất với expanded_nodes TỔNG CỘNG
-      → stats CSV chính xác
-    - finally block đảm bảo tracemalloc.stop() dù có exception
     """
     tracemalloc.start()
     t0             = time.time()
@@ -558,7 +461,5 @@ def astar_optimized(initial_state):
         })
 
     finally:
-        # Safety net: _finalize đã stop tracemalloc rồi,
-        # nhưng nếu có exception trước đó thì cần stop tại đây.
         if tracemalloc.is_tracing():
             tracemalloc.stop()

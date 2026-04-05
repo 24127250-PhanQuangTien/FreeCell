@@ -1,18 +1,13 @@
-# ──────────────────────────────────────────────
+# ─────────
 # Constants
-# ──────────────────────────────────────────────
+# ─────────
 
-SUITS = ["H", "D", "C", "S"]          # H=0, D=1, C=2, S=3
+SUITS = ["H", "D", "C", "S"]
 SUIT_IDX = {s: i for i, s in enumerate(SUITS)}
 
-# Card encoding:
-#   card_id  = suit * 13 + (rank - 1)   →  range [0, 51]
-#   suit     = cid // 13
-#   rank     = cid %  13 + 1
-#   is_red   = suit < 2                 →  H(0) và D(1) là đỏ
-EMPTY = -1                             # slot rỗng (freecell / cascade)
+EMPTY = -1
 
-EMPTY_CARD      = 0b111111             # 63 — sentinel khi encode vào integer key
+EMPTY_CARD      = 0b111111
 MAX_CARDS_PER_COL = 13
 
 BITS_PER_CARD   = 6
@@ -25,9 +20,9 @@ OFFSET_FREECELLS  = 16
 OFFSET_COL_LENS   = 40
 OFFSET_CARDS      = 64
 
-# ──────────────────────────────────────────────
-# Card encode / decode  (interop với code cũ / GUI)
-# ──────────────────────────────────────────────
+# ────────────────────
+# Card encode / decode
+# ────────────────────
 
 def card_to_id(card) -> int:
     """(suit_str, rank_int) → int [0, 51]"""
@@ -37,15 +32,6 @@ def card_to_id(card) -> int:
 def id_to_card(cid: int):
     """int [0, 51] → (suit_str, rank_int)"""
     return (SUITS[cid // 13], cid % 13 + 1)
-
-
-# ──────────────────────────────────────────────
-# Encode state → compact integer key
-# State format (int-based):
-#   foundations : tuple[int, int, int, int]   — top rank cho mỗi suit (0 = chưa có)
-#   freecells   : tuple[int, int, int, int]   — card_id hoặc EMPTY(-1)
-#   cascades    : tuple[tuple[int, ...], ...]  — card_id
-# ──────────────────────────────────────────────
 
 def encode_state(state) -> int:
     key = 0
@@ -76,14 +62,6 @@ def encode_state(state) -> int:
             key |= (cid & 0x3F) << (base + row * BITS_PER_CARD)
 
     return key
-
-
-# ──────────────────────────────────────────────
-# state_key: fast hashable key cho visited set
-# Thay thế encode_state trong search loops.
-# Dùng Python tuple hash (C-level) thay vì big int arithmetic.
-# Cùng canonicalization: sort freecells + empty cols về cuối.
-# ──────────────────────────────────────────────
 
 def state_key(state) -> tuple:
     fc = tuple(sorted(state["freecells"]))
@@ -120,9 +98,9 @@ def decode_state(key: int):
     }
 
 
-# ──────────────────────────────────────────────
-# Pruning: Auto-move to foundation (safe)
-# ──────────────────────────────────────────────
+# ────────────────────────────────
+# Pruning: Auto-move to foundation
+# ────────────────────────────────
 
 def _is_safe_to_auto_move(cid: int, foundations) -> bool:
     """
@@ -136,9 +114,9 @@ def _is_safe_to_auto_move(cid: int, foundations) -> bool:
         return True
 
     suit = cid // 13
-    if suit < 2:                                   # đỏ → cần lá đen
+    if suit < 2:                                   # đỏ -> cần lá đen
         min_opp = min(foundations[2], foundations[3])
-    else:                                          # đen → cần lá đỏ
+    else:                                          # đen -> cần lá đỏ
         min_opp = min(foundations[0], foundations[1])
 
     return min_opp >= rank - 1
@@ -152,7 +130,7 @@ def apply_safe_auto_moves(state_parent) -> tuple:
     # Shallow-copy ra list để mutate
     foundations = list(state_parent["foundations"])
     freecells   = list(state_parent["freecells"])
-    cascades    = list(state_parent["cascades"])   # list of tuples
+    cascades    = list(state_parent["cascades"])
 
     auto_moves = []
     changed = True
@@ -168,7 +146,7 @@ def apply_safe_auto_moves(state_parent) -> tuple:
             suit = cid // 13
             rank = cid % 13 + 1
             if foundations[suit] == rank - 1 and _is_safe_to_auto_move(cid, foundations):
-                cascades[i] = col[:-1]            # tuple slicing, không copy toàn bộ
+                cascades[i] = col[:-1]
                 foundations[suit] += 1
                 auto_moves.append(("cascade_to_foundation", i))
                 changed = True
@@ -193,16 +171,15 @@ def apply_safe_auto_moves(state_parent) -> tuple:
     return new_state, auto_moves
 
 
-# ──────────────────────────────────────────────
+# ───────────────────────────────────
 # Pruning: Dominance filter cho moves
-# ──────────────────────────────────────────────
+# ───────────────────────────────────
 
 def filter_dominated_moves(moves, state) -> list:
     freecells   = state["freecells"]
     cascades    = state["cascades"]
     foundations = state["foundations"]
 
-    # ── [R1] Safe foundation priority ────────────────────────────────────────
     safe_fnd = []
     for m in moves:
         if "foundation" not in m[0]:
@@ -214,12 +191,10 @@ def filter_dominated_moves(moves, state) -> list:
     if safe_fnd:
         return safe_fnd
 
-    # ── Precompute context ────────────────────────────────────────────────────
     first_empty_fc  = next((i for i, c in enumerate(freecells) if c == EMPTY), None)
     empty_col_idxs  = [i for i, col in enumerate(cascades) if not col]
     first_empty_col = empty_col_idxs[0] if empty_col_idxs else None
 
-    # Phân loại cascade→cascade moves (dùng card_id int làm key)
     cards_with_real_cascade: set[int] = set()
     cards_with_any_cascade:  set[int] = set()
     for m in moves:
@@ -233,17 +208,15 @@ def filter_dominated_moves(moves, state) -> list:
         if cascades[m[2]]:
             cards_with_real_cascade.add(cid)
 
-    # ── Filter loop ───────────────────────────────────────────────────────────
     filtered:  list  = []
-    seen_c2f:  set   = set()   # source col idx đã sinh cascade→freecell
-    seen_f2c:  set   = set()   # (card_id, dst_col) đã sinh freecell→cascade non-empty
+    seen_c2f:  set   = set()
+    seen_f2c:  set   = set()
     seen_f2e:  bool  = False
-    seen_c2e:  set   = set()   # source col đã sinh cascade→empty
+    seen_c2e:  set   = set()
 
     for move in moves:
         mtype = move[0]
 
-        # ── cascade→freecell ─────────────────────────────────────────────────
         if mtype == "cascade_to_freecell":
             col_idx = move[1]
             col = cascades[col_idx]
@@ -251,9 +224,9 @@ def filter_dominated_moves(moves, state) -> list:
                 continue
             cid = col[-1]
 
-            if cid in cards_with_real_cascade:     # [R4]
+            if cid in cards_with_real_cascade:
                 continue
-            if col_idx in seen_c2f:                # [R2] dedup
+            if col_idx in seen_c2f:
                 continue
 
             seen_c2f.add(col_idx)
@@ -298,10 +271,10 @@ def filter_dominated_moves(moves, state) -> list:
                 continue
             cid = col[-1]
 
-            if not cascades[dst_col]:              # empty dest
-                if cid in cards_with_real_cascade: # [R7]
+            if not cascades[dst_col]:
+                if cid in cards_with_real_cascade:
                     continue
-                if src_col in seen_c2e:            # [R6] dedup
+                if src_col in seen_c2e:
                     continue
                 seen_c2e.add(src_col)
                 filtered.append(("cascade_to_cascade", src_col, first_empty_col))

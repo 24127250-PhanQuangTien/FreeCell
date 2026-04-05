@@ -1,25 +1,9 @@
 from utilities import SUITS, SUIT_IDX, EMPTY, _is_safe_to_auto_move
 
 # ──────────────────────────────────────────────
-# State format (int-based):
-#   foundations : tuple[int, int, int, int]    — top rank theo suit H=0,D=1,C=2,S=3
-#                                                 (0 = chưa có lá nào)
-#   freecells   : tuple[int, int, int, int]    — card_id hoặc EMPTY (-1)
-#   cascades    : tuple[tuple[int, ...], ...]  — card_id, index 0 = bottom
-#
-# card_id = suit * 13 + (rank - 1)   →  [0, 51]
-#   suit  = cid // 13
-#   rank  = cid %  13 + 1
-#   red   = suit < 2   (H=0, D=1 đỏ;  C=2, S=3 đen)
-# ──────────────────────────────────────────────
-
-
-# ──────────────────────────────────────────────
 # Deck / Initial state
 # ──────────────────────────────────────────────
 
-# Thứ tự suits trong bộ bài gốc của game (Fisher-Yates seed)
-# Phải giữ nguyên để kết quả shuffle khớp với bản gốc.
 _GAME_SUITS = ['C', 'D', 'H', 'S']
 
 def _build_deck() -> list[int]:
@@ -30,11 +14,11 @@ def _build_deck() -> list[int]:
             deck.append(SUIT_IDX[suit] * 13 + (rank - 1))
     return deck
 
-_DECK = _build_deck()          # cache, không tạo lại mỗi ván
+_DECK = _build_deck()
 
 
 def create_initial_state(gamenumber: int) -> dict:
-    """Tạo state ban đầu từ game number (dùng thuật toán Fisher-Yates giống bản gốc)."""
+    """Tạo state ban đầu từ game number."""
     indices = list(range(52))
     seed = gamenumber
     for i in range(51, 0, -1):
@@ -78,9 +62,9 @@ def create_instruction_state() -> dict:
     }
 
 
-# ──────────────────────────────────────────────
-# Game logic (thuần arithmetic, không dùng string)
-# ──────────────────────────────────────────────
+# ──────────
+# Game logic
+# ──────────
 
 def is_red(cid: int) -> bool:
     """True nếu lá bài màu đỏ (H hoặc D). suit < 2 vì H=0, D=1."""
@@ -102,9 +86,9 @@ def can_move_to_foundation(cid: int, foundations) -> bool:
     return foundations[suit] == rank - 1
 
 
-# ──────────────────────────────────────────────
+# ───────────────
 # Move generation
-# ──────────────────────────────────────────────
+# ───────────────
 
 def get_moves(state) -> list:
     cascades    = state["cascades"]
@@ -112,7 +96,6 @@ def get_moves(state) -> list:
     foundations = state["foundations"]
     moves       = []
 
-    # ── Safe auto-moves (ưu tiên tuyệt đối, trả về ngay) ────────────────────
     for i, col in enumerate(cascades):
         if col:
             cid = col[-1]
@@ -126,26 +109,21 @@ def get_moves(state) -> list:
                _is_safe_to_auto_move(cid, foundations):
                 return [("freecell_to_foundation", i)]
 
-    # ── Cascade → Foundation ─────────────────────────────────────────────────
     for i, col in enumerate(cascades):
         if col and can_move_to_foundation(col[-1], foundations):
             moves.append(("cascade_to_foundation", i))
 
-    # ── Freecell → Foundation ────────────────────────────────────────────────
     for i, cid in enumerate(freecells):
         if cid != EMPTY and can_move_to_foundation(cid, foundations):
             moves.append(("freecell_to_foundation", i))
 
-    # Tìm ô freecell rỗng đầu tiên (dùng chung cho cascade→freecell)
     first_empty_fc = next((i for i, c in enumerate(freecells) if c == EMPTY), None)
 
-    # ── Cascade → Freecell ───────────────────────────────────────────────────
     if first_empty_fc is not None:
         for i, col in enumerate(cascades):
             if col:
                 moves.append(("cascade_to_freecell", i, first_empty_fc))
 
-    # ── Freecell → Cascade ───────────────────────────────────────────────────
     for i, cid in enumerate(freecells):
         if cid == EMPTY:
             continue
@@ -153,14 +131,13 @@ def get_moves(state) -> list:
         for j, col in enumerate(cascades):
             if not col:
                 if first_empty_col is None:
-                    first_empty_col = j          # chỉ lấy 1 cột rỗng
+                    first_empty_col = j
             else:
                 if can_stack(cid, col[-1]):
                     moves.append(("freecell_to_cascade", i, j))
         if first_empty_col is not None:
             moves.append(("freecell_to_cascade", i, first_empty_col))
 
-    # ── Cascade → Cascade ────────────────────────────────────────────────────
     for i, col1 in enumerate(cascades):
         if not col1:
             continue
@@ -181,16 +158,16 @@ def get_moves(state) -> list:
     return moves
 
 
-# ──────────────────────────────────────────────
+# ───────────
 # Apply move
-# ──────────────────────────────────────────────
+# ───────────
 
 def apply_move(state, move) -> dict:
     """
     Tạo state mới, chỉ copy những thứ thực sự thay đổi.
     Cascades là tuple-of-tuples nên slice O(1) với CPython (shared storage).
     """
-    cascades    = list(state["cascades"])          # shallow copy vỏ ngoài
+    cascades    = list(state["cascades"])
     freecells   = list(state["freecells"])
     foundations = list(state["foundations"])
     mtype       = move[0]
@@ -232,9 +209,9 @@ def apply_move(state, move) -> dict:
     }
 
 
-# ──────────────────────────────────────────────
+# ───────────────
 # Goal / Hashing
-# ──────────────────────────────────────────────
+# ───────────────
 
 def is_goal(state) -> bool:
     return all(v == 13 for v in state["foundations"])
@@ -245,9 +222,9 @@ def state_to_tuple(state) -> tuple:
     return (state["cascades"], state["freecells"], state["foundations"])
 
 
-# ──────────────────────────────────────────────
+# ──────────
 # Quick test
-# ──────────────────────────────────────────────
+# ──────────
 
 if __name__ == "__main__":
     from utilities import id_to_card
